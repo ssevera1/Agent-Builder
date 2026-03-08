@@ -1,0 +1,124 @@
+# Research Pipeline Workflow
+# This workflow takes a research topic, searches for information,
+# analyzes findings, and produces a comprehensive report.
+
+name: research-pipeline
+description: Multi-step research pipeline with analysis and report generation
+version: "1.0"
+
+inputs:
+  topic:
+    type: string
+    description: The research topic to investigate
+  depth:
+    type: string
+    description: Research depth (quick, standard, deep)
+    default: standard
+
+nodes:
+  - id: query_generator
+    type: agent
+    config:
+      agentConfig: research-query-generator
+      message: "Generate {{depth}} search queries for: {{topic}}"
+
+  - id: web_search
+    type: parallel
+    config:
+      itemsFrom: query_generator.queries
+      nodeConfig:
+        type: agent
+        agentConfig: web-searcher
+
+  - id: deduplicator
+    type: transform
+    config:
+      expression: |
+        const seen = new Set();
+        return inputs.results
+          .flat()
+          .filter(r => {
+            if (seen.has(r.url)) return false;
+            seen.add(r.url);
+            return true;
+          });
+
+  - id: relevance_filter
+    type: agent
+    config:
+      agentConfig: relevance-analyzer
+      message: "Filter and rank these results by relevance to '{{topic}}': {{deduplicator.output}}"
+
+  - id: depth_check
+    type: condition
+    config:
+      expression: "inputs.depth === 'deep'"
+
+  - id: deep_analysis
+    type: agent
+    config:
+      agentConfig: deep-analyzer
+      message: "Perform deep analysis on these sources: {{relevance_filter.output}}"
+
+  - id: synthesizer
+    type: agent
+    config:
+      agentConfig: report-synthesizer
+      message: "Synthesize a comprehensive report on '{{topic}}' from these findings: {{analysis_results}}"
+
+  - id: quality_check
+    type: agent
+    config:
+      agentConfig: quality-reviewer
+      message: "Review this report for accuracy, completeness, and clarity: {{synthesizer.output}}"
+
+  - id: human_review
+    type: human
+    config:
+      prompt: "Please review the generated report. Approve or provide feedback."
+      timeout: 3600000  # 1 hour
+
+  - id: final_output
+    type: transform
+    config:
+      expression: |
+        return {
+          report: inputs.report,
+          metadata: {
+            topic: inputs.topic,
+            sourcesCount: inputs.sourcesCount,
+            generatedAt: new Date().toISOString()
+          }
+        };
+
+edges:
+  - from: query_generator
+    to: web_search
+  - from: web_search
+    to: deduplicator
+  - from: deduplicator
+    to: relevance_filter
+  - from: relevance_filter
+    to: depth_check
+  - from: depth_check
+    to: deep_analysis
+    condition: "true"
+  - from: depth_check
+    to: synthesizer
+    condition: "false"
+  - from: deep_analysis
+    to: synthesizer
+  - from: synthesizer
+    to: quality_check
+  - from: quality_check
+    to: human_review
+  - from: human_review
+    to: final_output
+
+outputs:
+  report:
+    from: final_output
+    field: report
+  metadata:
+    from: final_output
+    field: metadata

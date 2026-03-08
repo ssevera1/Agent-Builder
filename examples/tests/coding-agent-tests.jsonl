@@ -1,0 +1,5 @@
+{"id": "coding-001", "name": "Simple function", "input": "Write a function that checks if a string is a palindrome", "expectedOutput": "function", "maxLatencyMs": 10000}
+{"id": "coding-002", "name": "Algorithm implementation", "input": "Implement a binary search algorithm in TypeScript", "expectedOutput": "binarySearch", "maxLatencyMs": 15000}
+{"id": "coding-003", "name": "Data structure", "input": "Implement a priority queue using a min-heap in JavaScript", "expectedToolCalls": ["code_executor"], "maxLatencyMs": 30000}
+{"id": "coding-004", "name": "API endpoint", "input": "Write a REST API endpoint in Express.js that handles user registration with validation", "expectedOutput": "router", "maxLatencyMs": 20000}
+{"id": "coding-005", "name": "Bug fix", "input": "This function should sum all numbers in a nested array but has a bug. Fix it:\nfunction deepSum(arr) { let sum = 0; for (const item of arr) { if (Array.isArray(item)) deepSum(item); else sum += item; } return sum; }", "expectedOutput": "sum += deepSum(item)", "expectedToolCalls": ["code_executor"], "maxLatencyMs": 20000}

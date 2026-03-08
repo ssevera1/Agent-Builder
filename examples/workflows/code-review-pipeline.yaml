@@ -1,0 +1,113 @@
+# Code Review Pipeline Workflow
+# Automated code review pipeline that analyzes code for bugs,
+# security issues, performance, and style — then produces a report.
+
+name: code-review-pipeline
+description: Automated multi-perspective code review with report generation
+version: "1.0"
+
+inputs:
+  code:
+    type: string
+    description: The code to review (or file path)
+  language:
+    type: string
+    description: Programming language
+    default: typescript
+  strictness:
+    type: string
+    description: Review strictness (lenient, standard, strict)
+    default: standard
+
+nodes:
+  - id: code_parser
+    type: transform
+    config:
+      expression: |
+        return {
+          code: inputs.code,
+          language: inputs.language,
+          strictness: inputs.strictness
+        };
+
+  # These three run in parallel — independent analyses
+  - id: bug_detector
+    type: agent
+    config:
+      agentConfig: bug-detector
+      message: "Analyze this {{language}} code for bugs, logic errors, and edge cases (strictness: {{strictness}}):\n\n{{code}}"
+
+  - id: security_analyzer
+    type: agent
+    config:
+      agentConfig: security-analyzer
+      message: "Perform a security audit of this {{language}} code. Check for OWASP Top 10, injection vulnerabilities, auth issues:\n\n{{code}}"
+
+  - id: performance_reviewer
+    type: agent
+    config:
+      agentConfig: performance-reviewer
+      message: "Analyze this {{language}} code for performance issues, memory leaks, algorithmic complexity:\n\n{{code}}"
+
+  - id: report_aggregator
+    type: agent
+    config:
+      agentConfig: report-aggregator
+      message: |
+        Aggregate these code review findings into a unified report:
+
+        Bug Analysis: {{bug_detector.output}}
+        Security Audit: {{security_analyzer.output}}
+        Performance Review: {{performance_reviewer.output}}
+
+        Prioritize findings by severity (critical, high, medium, low).
+        Include specific line references and fix suggestions.
+
+  - id: severity_check
+    type: condition
+    config:
+      expression: "inputs.hasCritical === true"
+
+  - id: human_approval
+    type: human
+    config:
+      prompt: "Critical issues found in code review. Please review findings before proceeding."
+
+  - id: final_report
+    type: transform
+    config:
+      expression: |
+        return {
+          summary: inputs.summary,
+          findings: inputs.findings,
+          score: inputs.score,
+          reviewedAt: new Date().toISOString()
+        };
+
+edges:
+  - from: code_parser
+    to: bug_detector
+  - from: code_parser
+    to: security_analyzer
+  - from: code_parser
+    to: performance_reviewer
+  - from: bug_detector
+    to: report_aggregator
+  - from: security_analyzer
+    to: report_aggregator
+  - from: performance_reviewer
+    to: report_aggregator
+  - from: report_aggregator
+    to: severity_check
+  - from: severity_check
+    to: human_approval
+    condition: "true"
+  - from: severity_check
+    to: final_report
+    condition: "false"
+  - from: human_approval
+    to: final_report
+
+outputs:
+  report:
+    from: final_report

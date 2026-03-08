@@ -1,0 +1,5 @@
+{"id": "research-001", "name": "Simple factual question", "input": "What is the capital of France?", "expectedOutput": "Paris", "maxLatencyMs": 5000}
+{"id": "research-002", "name": "Multi-source research", "input": "Compare the top 3 JavaScript frameworks for building web applications in 2026", "expectedToolCalls": ["web_search"], "maxLatencyMs": 30000}
+{"id": "research-003", "name": "Technical deep dive", "input": "Explain how WebAssembly works and its current browser support", "expectedToolCalls": ["web_search"], "maxLatencyMs": 30000}
+{"id": "research-004", "name": "Current events", "input": "What are the latest developments in quantum computing?", "expectedToolCalls": ["web_search"], "maxLatencyMs": 30000}
+{"id": "research-005", "name": "Comparison analysis", "input": "Compare PostgreSQL vs MySQL vs SQLite for a small team building a SaaS product", "expectedToolCalls": ["web_search"], "maxLatencyMs": 30000}
