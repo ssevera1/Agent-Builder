@@ -408,7 +408,8 @@ export class DAG<T> {
     }
 
     // Check for cycles
-    if (this.hasCycle()) {
+    const hasCycle = this.hasCycle();
+    if (hasCycle) {
       errors.push('Graph contains one or more cycles');
     }
 
@@ -430,11 +431,12 @@ export class DAG<T> {
       }
     }
 
-    // Check for orphan nodes — nodes that cannot be reached from any root
+    // Check for orphan nodes — skip when a cycle is already detected since
+    // cycles can cause spurious "no root nodes" and "unreachable" errors.
     const roots = this.getRoots();
-    if (roots.length === 0 && this.nodes.size > 0) {
+    if (!hasCycle && roots.length === 0 && this.nodes.size > 0) {
       errors.push('Graph has no root nodes — every node has at least one incoming edge (likely a cycle)');
-    } else {
+    } else if (!hasCycle) {
       const reachable = new Set<string>();
       const bfsQueue = [...roots];
       while (bfsQueue.length > 0) {

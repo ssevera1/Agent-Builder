@@ -39,6 +39,7 @@ interface MistralStreamChoice {
     role?: string;
     content?: string;
     tool_calls?: Array<{
+      index?: number;
       id?: string;
       type?: string;
       function?: { name?: string; arguments?: string };
@@ -271,18 +272,19 @@ export class MistralClient extends BaseClient {
                 // Tool calls
                 if (choice.delta.tool_calls) {
                   for (const tc of choice.delta.tool_calls) {
-                    // Mistral streams tool calls incrementally
-                    const idx = partialToolCalls.size;
+                    // Use the delta's index field to identify which tool call
+                    // this chunk belongs to. Fallback to Map.size only for
+                    // the very first chunk of a new call (when tc.id is set).
                     if (tc.id) {
+                      const idx = tc.index ?? partialToolCalls.size;
                       partialToolCalls.set(idx, {
                         id: tc.id,
                         name: tc.function?.name ?? '',
                         args: tc.function?.arguments ?? '',
                       });
-                    } else {
-                      // Continuation of existing tool call
-                      const lastIdx = partialToolCalls.size - 1;
-                      const partial = partialToolCalls.get(lastIdx);
+                    } else if (tc.index !== undefined) {
+                      // Continuation chunk — append args to the correct entry
+                      const partial = partialToolCalls.get(tc.index);
                       if (partial && tc.function?.arguments) {
                         partial.args += tc.function.arguments;
                       }
@@ -330,6 +332,7 @@ export class MistralClient extends BaseClient {
         }
       }
     } finally {
+      try { await reader.cancel(); } catch { /* ignore cancel errors on already-closed streams */ }
       reader.releaseLock();
     }
   }

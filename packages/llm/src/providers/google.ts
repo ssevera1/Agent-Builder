@@ -318,6 +318,7 @@ export class GeminiClient extends BaseClient {
         }
       }
     } finally {
+      try { await reader.cancel(); } catch { /* ignore cancel errors on already-closed streams */ }
       reader.releaseLock();
     }
   }
@@ -326,14 +327,25 @@ export class GeminiClient extends BaseClient {
 
   private convertMessages(messages: Message[]): GeminiContent[] {
     const result: GeminiContent[] = [];
+    // Track tool call id → function name so tool_result blocks can use the name
+    const toolCallNames = new Map<string, string>();
 
     for (const msg of messages) {
       // System messages handled separately as systemInstruction
       if (msg.role === 'system') continue;
 
+      // Record function names from assistant tool_call blocks
+      if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.type === 'tool_call') {
+            toolCallNames.set(block.id, block.name);
+          }
+        }
+      }
+
       const role: 'user' | 'model' =
         msg.role === 'assistant' ? 'model' : 'user';
-      const parts = this.convertContentToParts(msg.content, msg.role);
+      const parts = this.convertContentToParts(msg.content, msg.role, toolCallNames);
 
       if (parts.length > 0) {
         result.push({ role, parts });
@@ -346,6 +358,7 @@ export class GeminiClient extends BaseClient {
   private convertContentToParts(
     content: string | ContentBlock[],
     role: string,
+    toolCallNames?: Map<string, string>,
   ): GeminiPart[] {
     if (typeof content === 'string') {
       return [{ text: content }];
@@ -385,7 +398,8 @@ export class GeminiClient extends BaseClient {
         case 'tool_result':
           parts.push({
             functionResponse: {
-              name: block.toolCallId, // Gemini uses name, not ID
+              // Gemini requires the function name, not the call ID
+              name: toolCallNames?.get(block.toolCallId) ?? block.toolCallId,
               response: { result: block.content },
             },
           });

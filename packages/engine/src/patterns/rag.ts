@@ -21,6 +21,7 @@ import type {
   AgentServices,
   ContentBlock,
   LLMRequest,
+  LLMStreamChunk,
   MemorySearchResult,
   Message,
   TextBlock,
@@ -174,20 +175,19 @@ export class RAGPattern implements AgentPattern {
 
       for await (const chunk of stream) {
         switch (chunk.type) {
-          case 'content_block_delta': {
-            if (chunk.textDelta) {
-              fullText += chunk.textDelta;
-              yield this.createEvent('text_delta', { delta: chunk.textDelta });
+          case 'text': {
+            if (chunk.text) {
+              fullText += chunk.text;
+              yield this.createEvent('text_delta', { delta: chunk.text });
             }
             break;
           }
 
-          case 'message_delta':
-          case 'message_stop': {
+          case 'usage': {
             if (chunk.usage) {
-              cumulativeUsage.promptTokens += chunk.usage.promptTokens ?? 0;
-              cumulativeUsage.completionTokens += chunk.usage.completionTokens ?? 0;
-              cumulativeUsage.totalTokens += chunk.usage.totalTokens ?? 0;
+              cumulativeUsage.promptTokens += chunk.usage.inputTokens;
+              cumulativeUsage.completionTokens += chunk.usage.outputTokens;
+              cumulativeUsage.totalTokens += chunk.usage.totalTokens;
             }
             break;
           }
@@ -250,15 +250,7 @@ export class RAGPattern implements AgentPattern {
       maxTokens: 256,
     };
 
-    const response = await services.llm.complete(request);
-    cumulativeUsage.promptTokens += response.usage.promptTokens;
-    cumulativeUsage.completionTokens += response.usage.completionTokens;
-    cumulativeUsage.totalTokens += response.usage.totalTokens;
-
-    const text = response.content
-      .filter((b): b is TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('');
+    const text = await this.collectText(services.llm.stream(request), cumulativeUsage);
 
     // Parse the JSON array of queries
     const jsonMatch = text.match(/\[[\s\S]*\]/);
@@ -349,6 +341,23 @@ export class RAGPattern implements AgentPattern {
   // -----------------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------------
+
+  private async collectText(
+    stream: AsyncIterable<LLMStreamChunk>,
+    usage: TokenUsage,
+  ): Promise<string> {
+    let text = '';
+    for await (const chunk of stream) {
+      if (chunk.type === 'text' && chunk.text) {
+        text += chunk.text;
+      } else if (chunk.type === 'usage' && chunk.usage) {
+        usage.promptTokens += chunk.usage.inputTokens;
+        usage.completionTokens += chunk.usage.outputTokens;
+        usage.totalTokens += chunk.usage.totalTokens;
+      }
+    }
+    return text;
+  }
 
   private extractText(message: Message): string {
     if (typeof message.content === 'string') return message.content;

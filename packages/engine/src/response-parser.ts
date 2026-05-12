@@ -90,63 +90,60 @@ export class ResponseParser {
     knownTools?: ToolDefinition[],
   ): Promise<ParsedResponse> {
     const textParts: string[] = [];
-    const partialToolCalls = new Map<number, PartialToolCall>();
+    const rawToolCalls: ToolCall[] = [];
     let stopReason: StopReason = 'end_turn';
     let usage: TokenUsage | undefined;
     const warnings: string[] = [];
 
     for await (const chunk of chunks) {
       switch (chunk.type) {
-        case 'content_block_start': {
-          if (chunk.toolUse && chunk.index !== undefined) {
-            partialToolCalls.set(chunk.index, {
-              id: chunk.toolUse.id,
-              name: chunk.toolUse.name,
-              jsonFragments: [],
+        case 'text': {
+          if (chunk.text) {
+            textParts.push(chunk.text);
+          }
+          break;
+        }
+
+        case 'tool_call': {
+          if (chunk.toolCall) {
+            let parameters: Record<string, unknown> = {};
+            try {
+              parameters = JSON.parse(chunk.toolCall.arguments || '{}') as Record<string, unknown>;
+            } catch { /* keep empty */ }
+            rawToolCalls.push({
+              id: chunk.toolCall.id,
+              name: chunk.toolCall.name,
+              parameters,
             });
           }
           break;
         }
 
-        case 'content_block_delta': {
-          if (chunk.textDelta) {
-            textParts.push(chunk.textDelta);
-          }
-          if (chunk.toolUseDelta && chunk.index !== undefined) {
-            const partial = partialToolCalls.get(chunk.index);
-            if (partial) {
-              partial.jsonFragments.push(chunk.toolUseDelta);
-            }
-          }
-          break;
-        }
-
-        case 'content_block_stop': {
-          // Nothing special needed — the partial is already assembled
-          break;
-        }
-
-        case 'message_delta':
-        case 'message_stop': {
-          if (chunk.stopReason) {
-            stopReason = chunk.stopReason;
-          }
+        case 'usage': {
           if (chunk.usage) {
-            usage = this.mergeUsage(usage, chunk.usage);
+            usage = this.mergeUsage(usage, {
+              promptTokens: chunk.usage.inputTokens,
+              completionTokens: chunk.usage.outputTokens,
+              totalTokens: chunk.usage.totalTokens,
+            });
+          }
+          break;
+        }
+
+        case 'done': {
+          if (chunk.finishReason) {
+            stopReason = this.mapFinishReason(chunk.finishReason);
           }
           break;
         }
 
         case 'error': {
-          const errMsg = chunk.error?.message ?? 'Unknown streaming error';
-          warnings.push(`Stream error: ${errMsg}`);
+          warnings.push(`Stream error: ${chunk.error?.message ?? 'Unknown streaming error'}`);
           break;
         }
       }
     }
 
-    // Assemble final tool calls from partial fragments
-    const rawToolCalls = this.assemblePartialToolCalls(partialToolCalls, warnings);
     const toolCalls = this.validateToolCalls(rawToolCalls, knownTools, warnings);
 
     return {
@@ -163,71 +160,62 @@ export class ResponseParser {
    * arrive. This is used by patterns that need to emit AgentEvents in
    * real time during streaming.
    *
+   * Handles the normalized chunk format emitted by all providers:
+   * text / tool_call / usage / done / error.
+   *
    * @param chunks - Async iterable of streaming chunks.
    * @yields StreamParseEvent for each meaningful parsing event.
    */
   async *parseStreamIncremental(
     chunks: AsyncIterable<LLMStreamChunk>,
   ): AsyncIterable<StreamParseEvent> {
-    const partialToolCalls = new Map<number, PartialToolCall>();
-
     for await (const chunk of chunks) {
       switch (chunk.type) {
-        case 'content_block_start': {
-          if (chunk.toolUse && chunk.index !== undefined) {
-            partialToolCalls.set(chunk.index, {
-              id: chunk.toolUse.id,
-              name: chunk.toolUse.name,
-              jsonFragments: [],
-            });
+        case 'text': {
+          if (chunk.text) {
+            yield { type: 'text_delta', delta: chunk.text };
+          }
+          break;
+        }
+
+        case 'tool_call': {
+          if (chunk.toolCall) {
             yield {
               type: 'tool_call_start',
-              toolCallId: chunk.toolUse.id,
-              toolName: chunk.toolUse.name,
+              toolCallId: chunk.toolCall.id,
+              toolName: chunk.toolCall.name,
+            };
+            let parameters: Record<string, unknown> = {};
+            try {
+              parameters = JSON.parse(chunk.toolCall.arguments || '{}') as Record<string, unknown>;
+            } catch {
+              // Keep empty parameters on malformed JSON
+            }
+            yield {
+              type: 'tool_call_ready',
+              toolCall: { id: chunk.toolCall.id, name: chunk.toolCall.name, parameters },
             };
           }
           break;
         }
 
-        case 'content_block_delta': {
-          if (chunk.textDelta) {
-            yield { type: 'text_delta', delta: chunk.textDelta };
-          }
-          if (chunk.toolUseDelta && chunk.index !== undefined) {
-            const partial = partialToolCalls.get(chunk.index);
-            if (partial) {
-              partial.jsonFragments.push(chunk.toolUseDelta);
-            }
-          }
-          break;
-        }
-
-        case 'content_block_stop': {
-          if (chunk.index !== undefined) {
-            const partial = partialToolCalls.get(chunk.index);
-            if (partial) {
-              const toolCall = this.assembleOneToolCall(partial);
-              if (toolCall) {
-                yield { type: 'tool_call_ready', toolCall };
-              } else {
-                yield {
-                  type: 'warning',
-                  message: `Failed to parse tool call JSON for "${partial.name}" (id: ${partial.id}).`,
-                };
-              }
-              partialToolCalls.delete(chunk.index);
-            }
-          }
-          break;
-        }
-
-        case 'message_delta':
-        case 'message_stop': {
+        case 'usage': {
           if (chunk.usage) {
-            yield { type: 'usage', usage: chunk.usage };
+            yield {
+              type: 'usage',
+              usage: {
+                promptTokens: chunk.usage.inputTokens,
+                completionTokens: chunk.usage.outputTokens,
+                totalTokens: chunk.usage.totalTokens,
+              },
+            };
           }
-          if (chunk.stopReason) {
-            yield { type: 'stop', stopReason: chunk.stopReason };
+          break;
+        }
+
+        case 'done': {
+          if (chunk.finishReason) {
+            yield { type: 'stop', stopReason: chunk.finishReason as StopReason };
           }
           break;
         }
@@ -477,6 +465,19 @@ export class ResponseParser {
     if (value === null) return 'null';
     if (Array.isArray(value)) return 'array';
     return typeof value; // 'string' | 'number' | 'boolean' | 'object' | etc.
+  }
+
+  // -----------------------------------------------------------------------
+  // Finish reason mapping
+  // -----------------------------------------------------------------------
+
+  private mapFinishReason(reason: 'stop' | 'tool_use' | 'max_tokens' | 'error'): StopReason {
+    switch (reason) {
+      case 'stop': return 'end_turn';
+      case 'tool_use': return 'tool_use';
+      case 'max_tokens': return 'max_tokens';
+      case 'error': return 'error';
+    }
   }
 
   // -----------------------------------------------------------------------

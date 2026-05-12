@@ -353,6 +353,7 @@ export class CohereClient extends BaseClient {
         }
       }
     } finally {
+      try { await reader.cancel(); } catch { /* ignore cancel errors on already-closed streams */ }
       reader.releaseLock();
     }
   }

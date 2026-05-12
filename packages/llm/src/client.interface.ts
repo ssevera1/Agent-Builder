@@ -18,6 +18,12 @@ export interface LLMClient {
   complete(request: LLMRequest): AsyncIterable<LLMStreamChunk>;
 
   /**
+   * Alias for complete(). Provided so the engine's LLMClient interface
+   * (which distinguishes complete/stream) can be satisfied by BaseClient.
+   */
+  stream(request: LLMRequest): AsyncIterable<LLMStreamChunk>;
+
+  /**
    * Estimate token count for the given text.
    * Providers that lack a native tokenizer fall back to heuristic counting.
    */

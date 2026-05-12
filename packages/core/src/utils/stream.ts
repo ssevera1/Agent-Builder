@@ -73,18 +73,27 @@ export async function* mergeStreams<T>(...sources: AsyncIterable<T>[]): AsyncGen
     pending.set(i, pullNext(state, i));
   }
 
-  while (pending.size > 0) {
-    // Race all pending promises
-    const { index, result } = await Promise.race(pending.values());
+  try {
+    while (pending.size > 0) {
+      // Race all pending promises
+      const { index, result } = await Promise.race(pending.values());
 
-    if (result.done) {
-      states[index]!.done = true;
-      pending.delete(index);
-    } else {
-      yield result.value;
-      // Immediately request the next value from this iterator
-      const state = states[index]!;
-      pending.set(index, pullNext(state, index));
+      if (result.done) {
+        states[index]!.done = true;
+        pending.delete(index);
+      } else {
+        yield result.value;
+        // Immediately request the next value from this iterator
+        const state = states[index]!;
+        pending.set(index, pullNext(state, index));
+      }
+    }
+  } finally {
+    // Close any iterators that are still open (consumer exited early or one source threw)
+    for (const state of states) {
+      if (!state.done) {
+        await state.iterator.return?.();
+      }
     }
   }
 }
@@ -208,23 +217,28 @@ export function createPushStream<T>(): {
   }
 
   async function* generate(): AsyncGenerator<T> {
-    while (true) {
-      if (queue.length === 0) {
-        await new Promise<void>((r) => {
-          resolve = r;
-        });
-      }
+    try {
+      while (true) {
+        if (queue.length === 0) {
+          await new Promise<void>((r) => {
+            resolve = r;
+          });
+        }
 
-      while (queue.length > 0) {
-        const item = queue.shift()!;
-        if (item.type === 'done') {
-          return;
+        while (queue.length > 0) {
+          const item = queue.shift()!;
+          if (item.type === 'done') {
+            return;
+          }
+          if (item.type === 'error') {
+            throw item.error;
+          }
+          yield item.value;
         }
-        if (item.type === 'error') {
-          throw item.error;
-        }
-        yield item.value;
       }
+    } finally {
+      // Stop accepting new items when the consumer exits early
+      done = true;
     }
   }
 

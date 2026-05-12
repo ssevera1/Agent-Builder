@@ -284,8 +284,8 @@ export class Orchestrator {
         effectiveContext,
         services,
       )) {
-        // Track aggregate stats from events
         if (event.type === 'run_done') {
+          // Capture stats but hold back — run_done emits after steps 5 & 6
           const doneData = event.data as {
             finalResponse: string;
             totalTokens: TokenUsage;
@@ -296,10 +296,9 @@ export class Orchestrator {
           totalTokens = doneData.totalTokens;
           turnsUsed = doneData.turnsUsed;
           toolCallsCount = doneData.toolCallsCount;
+        } else {
+          yield* this.emit(event);
         }
-
-        // Relay all pattern events upstream
-        yield* this.emit(event);
       }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -324,18 +323,6 @@ export class Orchestrator {
         type: 'text_done',
         timestamp: new Date().toISOString(),
         data: { fullText: finalResponse },
-      });
-
-      yield* this.emit({
-        type: 'run_done',
-        timestamp: new Date().toISOString(),
-        data: {
-          finalResponse,
-          totalTokens,
-          totalDurationMs: Date.now() - startTime,
-          turnsUsed,
-          toolCallsCount,
-        },
       });
     }
 
@@ -410,6 +397,19 @@ export class Orchestrator {
         }
       }
     }
+
+    // ---- Emit run_done after guardrails and memory are complete ----
+    yield* this.emit({
+      type: 'run_done',
+      timestamp: new Date().toISOString(),
+      data: {
+        finalResponse,
+        totalTokens,
+        totalDurationMs: Date.now() - startTime,
+        turnsUsed,
+        toolCallsCount,
+      },
+    });
   }
 
   // -----------------------------------------------------------------------

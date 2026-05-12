@@ -181,13 +181,9 @@ export class SQLiteCheckpointStore implements CheckpointStore {
     const stmt = this.db.prepare(
       `DELETE FROM ${this.tableName} WHERE updated_at < ?`
     );
-    const rows = this.db.prepare(
-      `SELECT COUNT(*) as count FROM ${this.tableName} WHERE updated_at < ?`
-    );
-    const result = rows.get(date.toISOString());
-    const count = (result as Record<string, unknown> | undefined)?.['count'] as number ?? 0;
     stmt.run(date.toISOString());
-    return count;
+    const result = this.db.prepare('SELECT changes() as count').get();
+    return (result?.['count'] as number) ?? 0;
   }
 }
 
@@ -214,7 +210,11 @@ export class FileCheckpointStore implements CheckpointStore {
     const { mkdir, writeFile } = await import('node:fs/promises');
     await mkdir(this.directory, { recursive: true });
     const serialized = serializeState(state);
-    await writeFile(this.filePath(executionId), JSON.stringify(serialized, null, 2), 'utf-8');
+    await writeFile(
+      this.filePath(executionId),
+      JSON.stringify({ _id: executionId, ...serialized }, null, 2),
+      'utf-8',
+    );
   }
 
   async load(executionId: string): Promise<WorkflowExecutionState | undefined> {
@@ -230,12 +230,22 @@ export class FileCheckpointStore implements CheckpointStore {
   }
 
   async list(): Promise<string[]> {
-    const { readdir } = await import('node:fs/promises');
+    const { readdir, readFile } = await import('node:fs/promises');
     try {
       const files = await readdir(this.directory);
-      return files
-        .filter((f) => f.endsWith('.json'))
-        .map((f) => f.replace(/\.json$/, ''));
+      const jsonFiles = files.filter((f) => f.endsWith('.json'));
+      const ids = await Promise.all(
+        jsonFiles.map(async (f) => {
+          try {
+            const content = await readFile(`${this.directory}/${f}`, 'utf-8');
+            const parsed = JSON.parse(content) as { _id?: string };
+            return parsed['_id'] ?? f.replace(/\.json$/, '');
+          } catch {
+            return f.replace(/\.json$/, '');
+          }
+        }),
+      );
+      return ids;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
       throw err;

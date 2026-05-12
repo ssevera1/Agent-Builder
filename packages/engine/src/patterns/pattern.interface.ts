@@ -131,31 +131,25 @@ export interface LLMResponse {
   raw?: unknown;
 }
 
-export type LLMStreamEventType =
-  | 'message_start'
-  | 'content_block_start'
-  | 'content_block_delta'
-  | 'content_block_stop'
-  | 'message_delta'
-  | 'message_stop'
-  | 'error';
+export type LLMStreamEventType = 'text' | 'tool_call' | 'usage' | 'error' | 'done';
 
 export interface LLMStreamChunk {
   type: LLMStreamEventType;
-  index?: number;
-  textDelta?: string;
-  toolUseDelta?: string;
-  toolUse?: { id: string; name: string };
-  usage?: Partial<TokenUsage>;
-  stopReason?: StopReason;
-  error?: { type: string; message: string };
+  /** Text content delta (type='text'). */
+  text?: string;
+  /** Completed tool call (type='tool_call'). */
+  toolCall?: { id: string; name: string; arguments: string };
+  /** Token usage statistics (type='usage'). */
+  usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
+  /** Why generation stopped (type='done'). */
+  finishReason?: 'stop' | 'tool_use' | 'max_tokens' | 'error';
+  /** Error information (type='error'). */
+  error?: { code: string; message: string };
 }
 
 /** Minimal LLM client contract the engine requires. */
 export interface LLMClient {
-  /** Send a request and get a complete response. */
-  complete(request: LLMRequest): Promise<LLMResponse>;
-  /** Send a request and stream back chunks. */
+  /** Send a request and stream back normalized chunks. */
   stream(request: LLMRequest): AsyncIterable<LLMStreamChunk>;
 }
 

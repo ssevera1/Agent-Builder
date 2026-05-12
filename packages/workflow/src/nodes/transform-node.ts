@@ -167,6 +167,15 @@ function resolveTemplate(
 
 // ─── Safe Expression Evaluation ─────────────────────────────────────────────
 
+// Object proxy exposing only safe enumeration methods — prevents prototype chain escapes.
+const SAFE_OBJECT = {
+  keys: Object.keys.bind(Object),
+  values: Object.values.bind(Object),
+  entries: Object.entries.bind(Object),
+  assign: Object.assign.bind(Object),
+  fromEntries: Object.fromEntries.bind(Object),
+};
+
 /**
  * Allowlist of safe global names accessible within expressions.
  * No access to `process`, `require`, `import`, `eval`, `Function`, etc.
@@ -178,7 +187,7 @@ const SAFE_GLOBALS: Record<string, unknown> = {
   String,
   Boolean,
   Array,
-  Object,
+  Object: SAFE_OBJECT,
   JSON,
   Date,
   parseInt,

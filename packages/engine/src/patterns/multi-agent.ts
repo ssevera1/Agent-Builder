@@ -23,11 +23,12 @@ import type {
   AgentServices,
   ContentBlock,
   LLMRequest,
+  LLMStreamChunk,
   Message,
   TextBlock,
   TokenUsage,
+  ToolCall,
 } from './pattern.interface.js';
-import { ResponseParser } from '../response-parser.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -78,7 +79,46 @@ export class MultiAgentPattern implements AgentPattern {
     'Routes requests to specialist agents and supports agent-to-agent handoffs. ' +
     'Best for systems with multiple specialized capabilities.';
 
-  private readonly parser = new ResponseParser();
+  private async collectText(
+    stream: AsyncIterable<LLMStreamChunk>,
+    usage: TokenUsage,
+  ): Promise<string> {
+    let text = '';
+    for await (const chunk of stream) {
+      if (chunk.type === 'text' && chunk.text) {
+        text += chunk.text;
+      } else if (chunk.type === 'usage' && chunk.usage) {
+        usage.promptTokens += chunk.usage.inputTokens;
+        usage.completionTokens += chunk.usage.outputTokens;
+        usage.totalTokens += chunk.usage.totalTokens;
+      }
+    }
+    return text;
+  }
+
+  private async collectResponse(
+    stream: AsyncIterable<LLMStreamChunk>,
+    usage: TokenUsage,
+  ): Promise<{ text: string; toolCalls: ToolCall[] }> {
+    let text = '';
+    const toolCalls: ToolCall[] = [];
+    for await (const chunk of stream) {
+      if (chunk.type === 'text' && chunk.text) {
+        text += chunk.text;
+      } else if (chunk.type === 'tool_call' && chunk.toolCall) {
+        let parameters: Record<string, unknown> = {};
+        try {
+          parameters = JSON.parse(chunk.toolCall.arguments || '{}') as Record<string, unknown>;
+        } catch { /* keep empty */ }
+        toolCalls.push({ id: chunk.toolCall.id, name: chunk.toolCall.name, parameters });
+      } else if (chunk.type === 'usage' && chunk.usage) {
+        usage.promptTokens += chunk.usage.inputTokens;
+        usage.completionTokens += chunk.usage.outputTokens;
+        usage.totalTokens += chunk.usage.totalTokens;
+      }
+    }
+    return { text, toolCalls };
+  }
 
   /**
    * Specialist agent configurations. In a real system these would be
@@ -276,15 +316,10 @@ export class MultiAgentPattern implements AgentPattern {
     };
 
     try {
-      const response = await services.llm.complete(request);
-      cumulativeUsage.promptTokens += response.usage.promptTokens;
-      cumulativeUsage.completionTokens += response.usage.completionTokens;
-      cumulativeUsage.totalTokens += response.usage.totalTokens;
-
-      const text = response.content
-        .filter((b): b is TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('');
+      const text = await this.collectText(
+        services.llm.stream(request),
+        cumulativeUsage,
+      );
 
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
@@ -369,20 +404,16 @@ export class MultiAgentPattern implements AgentPattern {
         toolChoice: llmTools.length > 0 ? 'auto' : undefined,
       };
 
-      const response = await services.llm.complete(request);
-      usage.promptTokens += response.usage.promptTokens;
-      usage.completionTokens += response.usage.completionTokens;
-      usage.totalTokens += response.usage.totalTokens;
-
-      const parsed = this.parser.parseComplete(response, toolDefs);
+      const { text: agentText, toolCalls } = await this.collectResponse(
+        services.llm.stream(request),
+        usage,
+      );
 
       // Check for handoff tool call
-      const handoffCall = parsed.toolCalls.find(
-        (tc) => tc.name === HANDOFF_TOOL_NAME,
-      );
+      const handoffCall = toolCalls.find((tc) => tc.name === HANDOFF_TOOL_NAME);
       if (handoffCall) {
         return {
-          text: parsed.text,
+          text: agentText,
           toolCallsCount,
           usage,
           handoff: {
@@ -394,16 +425,16 @@ export class MultiAgentPattern implements AgentPattern {
       }
 
       // No tool calls — return the final response
-      if (parsed.toolCalls.length === 0) {
-        return { text: parsed.text, toolCallsCount, usage };
+      if (toolCalls.length === 0) {
+        return { text: agentText, toolCallsCount, usage };
       }
 
       // Process regular tool calls
       const assistantContent: ContentBlock[] = [];
-      if (parsed.text) {
-        assistantContent.push({ type: 'text', text: parsed.text });
+      if (agentText) {
+        assistantContent.push({ type: 'text', text: agentText });
       }
-      for (const tc of parsed.toolCalls) {
+      for (const tc of toolCalls) {
         assistantContent.push({
           type: 'tool_use',
           id: tc.id,
@@ -413,7 +444,7 @@ export class MultiAgentPattern implements AgentPattern {
       }
       messages.push({ role: 'assistant', content: assistantContent });
 
-      for (const tc of parsed.toolCalls) {
+      for (const tc of toolCalls) {
         toolCallsCount++;
 
         let result;

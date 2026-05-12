@@ -47,12 +47,16 @@ async function withTimeout<T>(
 /**
  * Simple concurrency limiter. Runs `tasks` with at most `limit` executing
  * at a time, preserving order of results.
+ *
+ * If any task throws, all tasks are still allowed to complete (no holes in
+ * results). The first error is re-thrown after all workers finish.
  */
 async function parallelLimit<T>(
   tasks: Array<() => Promise<T>>,
   limit: number,
 ): Promise<T[]> {
-  const results: T[] = new Array(tasks.length);
+  type Slot = { ok: true; value: T } | { ok: false; error: unknown };
+  const slots: Slot[] = new Array(tasks.length);
   let nextIndex = 0;
 
   async function worker(): Promise<void> {
@@ -60,7 +64,11 @@ async function parallelLimit<T>(
       const idx = nextIndex++;
       const task = tasks[idx];
       if (task) {
-        results[idx] = await task();
+        try {
+          slots[idx] = { ok: true, value: await task() };
+        } catch (err) {
+          slots[idx] = { ok: false, error: err };
+        }
       }
     }
   }
@@ -71,7 +79,10 @@ async function parallelLimit<T>(
   }
 
   await Promise.all(workers);
-  return results;
+
+  const firstError = slots.find((s) => !s.ok);
+  if (firstError) throw (firstError as { ok: false; error: unknown }).error;
+  return slots.map((s) => (s as { ok: true; value: T }).value);
 }
 
 // ---------------------------------------------------------------------------

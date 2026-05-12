@@ -72,6 +72,10 @@ export abstract class BaseClient implements LLMClient {
     return { ...this._totalUsage };
   }
 
+  async *stream(request: LLMRequest): AsyncIterable<LLMStreamChunk> {
+    yield* this.complete(request);
+  }
+
   async *complete(request: LLMRequest): AsyncIterable<LLMStreamChunk> {
     const startTime = Date.now();
     let attempt = 0;
@@ -102,7 +106,7 @@ export abstract class BaseClient implements LLMClient {
             error: { code: llmError.code, message: llmError.message },
           };
           yield { type: 'done' as const, finishReason: 'error' as const };
-          throw llmError;
+          return;
         }
 
         const delay = this.computeRetryDelay(attempt, llmError.retryAfterMs);

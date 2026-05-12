@@ -19,14 +19,13 @@ import type {
   AgentServices,
   ContentBlock,
   LLMRequest,
+  LLMStreamChunk,
   LLMToolDefinition,
   Message,
   PlanStep,
-  TextBlock,
   TokenUsage,
   ToolCall,
 } from './pattern.interface.js';
-import { ResponseParser } from '../response-parser.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -87,8 +86,6 @@ export class PlanAndExecutePattern implements AgentPattern {
   readonly description =
     'Creates a structured plan first, then executes each step sequentially. ' +
     'Best for complex tasks that benefit from upfront planning.';
-
-  private readonly parser = new ResponseParser();
 
   async *execute(
     input: Message,
@@ -244,6 +241,53 @@ export class PlanAndExecutePattern implements AgentPattern {
   }
 
   // -----------------------------------------------------------------------
+  // Stream collection helpers
+  // -----------------------------------------------------------------------
+
+  /** Collect text and usage from a normalized LLM stream. */
+  private async collectText(
+    stream: AsyncIterable<LLMStreamChunk>,
+    usage: TokenUsage,
+  ): Promise<string> {
+    let text = '';
+    for await (const chunk of stream) {
+      if (chunk.type === 'text' && chunk.text) {
+        text += chunk.text;
+      } else if (chunk.type === 'usage' && chunk.usage) {
+        usage.promptTokens += chunk.usage.inputTokens;
+        usage.completionTokens += chunk.usage.outputTokens;
+        usage.totalTokens += chunk.usage.totalTokens;
+      }
+    }
+    return text;
+  }
+
+  /** Collect text, tool calls, and usage from a normalized LLM stream. */
+  private async collectResponse(
+    stream: AsyncIterable<LLMStreamChunk>,
+    usage: TokenUsage,
+  ): Promise<{ text: string; toolCalls: ToolCall[] }> {
+    let text = '';
+    const toolCalls: ToolCall[] = [];
+    for await (const chunk of stream) {
+      if (chunk.type === 'text' && chunk.text) {
+        text += chunk.text;
+      } else if (chunk.type === 'tool_call' && chunk.toolCall) {
+        let parameters: Record<string, unknown> = {};
+        try {
+          parameters = JSON.parse(chunk.toolCall.arguments || '{}') as Record<string, unknown>;
+        } catch { /* keep empty */ }
+        toolCalls.push({ id: chunk.toolCall.id, name: chunk.toolCall.name, parameters });
+      } else if (chunk.type === 'usage' && chunk.usage) {
+        usage.promptTokens += chunk.usage.inputTokens;
+        usage.completionTokens += chunk.usage.outputTokens;
+        usage.totalTokens += chunk.usage.totalTokens;
+      }
+    }
+    return { text, toolCalls };
+  }
+
+  // -----------------------------------------------------------------------
   // Planning
   // -----------------------------------------------------------------------
 
@@ -264,21 +308,11 @@ export class PlanAndExecutePattern implements AgentPattern {
         { role: 'system', content: PLANNING_PROMPT },
         input,
       ],
-      temperature: Math.max(0, config.temperature - 0.1), // Slightly lower for planning
+      temperature: Math.max(0, config.temperature - 0.1),
       maxTokens: config.maxTokens,
     };
 
-    const response = await services.llm.complete(planningRequest);
-    cumulativeUsage.promptTokens += response.usage.promptTokens;
-    cumulativeUsage.completionTokens += response.usage.completionTokens;
-    cumulativeUsage.totalTokens += response.usage.totalTokens;
-
-    // Extract the plan from the response
-    const text = response.content
-      .filter((b): b is TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('');
-
+    const text = await this.collectText(services.llm.stream(planningRequest), cumulativeUsage);
     return this.parsePlan(text);
   }
 
@@ -405,21 +439,19 @@ export class PlanAndExecutePattern implements AgentPattern {
         toolChoice: builtPrompt.tools.length > 0 ? 'auto' : undefined,
       };
 
-      const response = await services.llm.complete(request);
-      usage.promptTokens += response.usage.promptTokens;
-      usage.completionTokens += response.usage.completionTokens;
-      usage.totalTokens += response.usage.totalTokens;
-
-      const parsed = this.parser.parseComplete(response);
+      const { text: stepText, toolCalls } = await this.collectResponse(
+        services.llm.stream(request),
+        usage,
+      );
 
       // If there are tool calls, execute them and continue
-      if (parsed.toolCalls.length > 0) {
+      if (toolCalls.length > 0) {
         // Add assistant message with tool calls
         const assistantContent: ContentBlock[] = [];
-        if (parsed.text) {
-          assistantContent.push({ type: 'text', text: parsed.text });
+        if (stepText) {
+          assistantContent.push({ type: 'text', text: stepText });
         }
-        for (const tc of parsed.toolCalls) {
+        for (const tc of toolCalls) {
           assistantContent.push({
             type: 'tool_use',
             id: tc.id,
@@ -430,7 +462,7 @@ export class PlanAndExecutePattern implements AgentPattern {
         messages.push({ role: 'assistant', content: assistantContent });
 
         // Execute tools
-        for (const tc of parsed.toolCalls) {
+        for (const tc of toolCalls) {
           toolCallCount++;
           const result = await services.tools.dispatch(tc, {
             agentId: config.id,
@@ -461,7 +493,7 @@ export class PlanAndExecutePattern implements AgentPattern {
       }
 
       // No tool calls — this is the step's final result
-      return { text: parsed.text, toolCallCount, usage };
+      return { text: stepText, toolCallCount, usage };
     }
 
     // Exceeded step iterations
@@ -516,15 +548,10 @@ export class PlanAndExecutePattern implements AgentPattern {
         maxTokens: 1024,
       };
 
-      const response = await services.llm.complete(request);
-      cumulativeUsage.promptTokens += response.usage.promptTokens;
-      cumulativeUsage.completionTokens += response.usage.completionTokens;
-      cumulativeUsage.totalTokens += response.usage.totalTokens;
-
-      const text = response.content
-        .filter((b): b is TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('');
+      const text = await this.collectText(
+        services.llm.stream(request),
+        cumulativeUsage,
+      );
 
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) return null;

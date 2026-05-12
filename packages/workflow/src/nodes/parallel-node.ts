@@ -181,13 +181,22 @@ function evaluateMapExpression(
     }
   }
 
+  // Object proxy exposing only safe enumeration methods — prevents prototype chain escapes.
+  const safeObject = {
+    keys: Object.keys.bind(Object),
+    values: Object.values.bind(Object),
+    entries: Object.entries.bind(Object),
+    assign: Object.assign.bind(Object),
+    fromEntries: Object.fromEntries.bind(Object),
+  };
+
   const scope: Record<string, unknown> = {
     Math,
     Number,
     String,
     Boolean,
     Array,
-    Object,
+    Object: safeObject,
     JSON,
     parseInt,
     parseFloat,

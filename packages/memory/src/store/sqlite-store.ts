@@ -138,6 +138,9 @@ export class SQLiteVectorStore implements VectorStore {
     if (filter && Object.keys(filter).length > 0) {
       const conditions: string[] = [];
       for (const [key, value] of Object.entries(filter)) {
+        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)) {
+          throw new Error(`Invalid filter key "${key}": only alphanumeric characters and underscores are allowed`);
+        }
         conditions.push(`JSON_EXTRACT(metadata, ?) = ?`);
         params.push(`$.${key}`, value as string | number);
       }

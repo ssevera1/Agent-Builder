@@ -35,6 +35,15 @@ const BLOCKED_PATTERNS = [
   /\bprototype\b/,
 ];
 
+// Object proxy exposing only safe enumeration methods — prevents prototype chain escapes.
+const SAFE_OBJECT = {
+  keys: Object.keys.bind(Object),
+  values: Object.values.bind(Object),
+  entries: Object.entries.bind(Object),
+  assign: Object.assign.bind(Object),
+  fromEntries: Object.fromEntries.bind(Object),
+};
+
 /**
  * Safe globals accessible in condition expressions.
  */
@@ -44,7 +53,7 @@ const SAFE_GLOBALS: Record<string, unknown> = {
   String,
   Boolean,
   Array,
-  Object,
+  Object: SAFE_OBJECT,
   JSON,
   parseInt,
   parseFloat,
