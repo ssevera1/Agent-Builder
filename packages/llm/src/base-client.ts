@@ -1,259 +1,92 @@
-import type {
-  LLMRequest,
-  LLMStreamChunk,
-  ModelInfo,
-  TokenUsage,
-} from '@agentbuilder/core';
-import type { LLMClient } from './client.interface.js';
-
-/** Classified error codes returned by providers. */
-export type ProviderErrorCode =
-  | 'rate_limit'
-  | 'auth'
-  | 'context_length'
-  | 'invalid_request'
-  | 'server_error'
-  | 'network'
-  | 'timeout'
-  | 'overloaded'
-  | 'content_filter'
-  | 'unknown';
-
 /**
- * Structured error emitted by LLM clients.
+ * Base LLM client with common functionality across all providers.
  */
-export class ProviderError extends Error {
-  constructor(
-    message: string,
-    public readonly code: ProviderErrorCode,
-    public readonly statusCode?: number,
-    public readonly retryable: boolean = false,
-    public readonly retryAfterMs?: number,
-  ) {
-    super(message);
-    this.name = 'ProviderError';
-  }
-}
+
+import { LLMError, RateLimitError } from '@agentbuilder/core';
+import type { LLMRequest, LLMResponse, LLMStreamChunk } from '@agentbuilder/core';
+import { logger } from '@agentbuilder/core';
+
+const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_INITIAL_BACKOFF_MS = 1000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
 
 export interface RetryConfig {
   maxRetries: number;
-  initialDelayMs: number;
-  maxDelayMs: number;
-  backoffMultiplier: number;
+  initialBackoffMs: number;
+  requestTimeoutMs: number;
 }
 
-const DEFAULT_RETRY_CONFIG: RetryConfig = {
-  maxRetries: 3,
-  initialDelayMs: 1000,
-  maxDelayMs: 30_000,
-  backoffMultiplier: 2,
-};
+export abstract class BaseLLMClient {
+  protected maxRetries: number;
+  protected initialBackoffMs: number;
+  protected requestTimeoutMs: number;
 
-/**
- * Abstract base class implementing common LLM client functionality:
- * retry logic, token tracking, error classification, and logging.
- */
-export abstract class BaseClient implements LLMClient {
-  abstract readonly providerId: string;
-  abstract readonly modelId: string;
-
-  protected readonly retryConfig: RetryConfig;
-  private _totalUsage: TokenUsage = {
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0,
-  };
-
-  constructor(options?: { retry?: Partial<RetryConfig> }) {
-    this.retryConfig = { ...DEFAULT_RETRY_CONFIG, ...options?.retry };
+  constructor(retryConfig?: Partial<RetryConfig>) {
+    this.maxRetries = retryConfig?.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.initialBackoffMs = retryConfig?.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS;
+    this.requestTimeoutMs = retryConfig?.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
-
-  get totalUsage(): Readonly<TokenUsage> {
-    return { ...this._totalUsage };
-  }
-
-  async *stream(request: LLMRequest): AsyncIterable<LLMStreamChunk> {
-    yield* this.complete(request);
-  }
-
-  async *complete(request: LLMRequest): AsyncIterable<LLMStreamChunk> {
-    const startTime = Date.now();
-    let attempt = 0;
-
-    while (true) {
-      try {
-        this.logRequest(request, attempt);
-        const stream = this._rawComplete(request);
-
-        for await (const chunk of stream) {
-          if (chunk.type === 'usage' && chunk.usage) {
-            this._totalUsage.inputTokens += chunk.usage.inputTokens;
-            this._totalUsage.outputTokens += chunk.usage.outputTokens;
-            this._totalUsage.totalTokens += chunk.usage.totalTokens;
-          }
-          yield chunk;
-        }
-
-        this.logResponse(Date.now() - startTime, attempt);
-        return;
-      } catch (err) {
-        const llmError = this.classifyError(err);
-        attempt++;
-
-        if (!llmError.retryable || attempt > this.retryConfig.maxRetries) {
-          yield {
-            type: 'error' as const,
-            error: { code: llmError.code, message: llmError.message },
-          };
-          yield { type: 'done' as const, finishReason: 'error' as const };
-          return;
-        }
-
-        const delay = this.computeRetryDelay(attempt, llmError.retryAfterMs);
-        this.logRetry(attempt, delay, llmError);
-        await this.sleep(delay);
-      }
-    }
-  }
-
-  async countTokens(text: string): Promise<number> {
-    try {
-      return await this._rawCountTokens(text);
-    } catch {
-      return Math.ceil(text.length / 4);
-    }
-  }
-
-  async listModels(): Promise<ModelInfo[]> {
-    return this._rawListModels();
-  }
-
-  abstract getModelInfo(): ModelInfo;
-  abstract supportsToolUse(): boolean;
-  abstract supportsVision(): boolean;
-  abstract supportsStreaming(): boolean;
-
-  protected abstract _rawComplete(
-    request: LLMRequest,
-  ): AsyncIterable<LLMStreamChunk>;
-
-  protected abstract _rawCountTokens(text: string): Promise<number>;
-
-  protected abstract _rawListModels(): Promise<ModelInfo[]>;
 
   /**
-   * Classify a raw error into a structured ProviderError.
-   * Subclasses can override to handle provider-specific error formats.
+   * Execute a request with exponential backoff retry on transient failures.
+   * Retries on rate limits and network timeouts; fails immediately on auth/validation.
    */
-  protected classifyError(err: unknown): ProviderError {
-    if (err instanceof ProviderError) return err;
+  protected async executeWithRetry<T>(
+    fn: () => Promise<T>,
+    operationName: string,
+  ): Promise<T> {
+    let lastError: Error | undefined;
 
-    const message = err instanceof Error ? err.message : String(err);
-    const statusCode = this.extractStatusCode(err);
+    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), this.requestTimeoutMs);
 
-    if (statusCode === 401 || statusCode === 403) {
-      return new ProviderError(message, 'auth', statusCode, false);
-    }
-    if (statusCode === 429) {
-      const retryAfter = this.extractRetryAfter(err);
-      return new ProviderError(message, 'rate_limit', statusCode, true, retryAfter);
-    }
-    if (statusCode === 400) {
-      if (/context.*(length|window|too long|token)/i.test(message)) {
-        return new ProviderError(message, 'context_length', statusCode, false);
-      }
-      return new ProviderError(message, 'invalid_request', statusCode, false);
-    }
-    if (statusCode === 529 || statusCode === 503) {
-      return new ProviderError(message, 'overloaded', statusCode, true, 5000);
-    }
-    if (statusCode !== undefined && statusCode >= 500) {
-      return new ProviderError(message, 'server_error', statusCode, true);
-    }
-    if (
-      message.includes('ECONNREFUSED') ||
-      message.includes('ENOTFOUND') ||
-      message.includes('fetch failed')
-    ) {
-      return new ProviderError(message, 'network', undefined, true);
-    }
-    if (message.includes('timeout') || message.includes('ETIMEDOUT')) {
-      return new ProviderError(message, 'timeout', undefined, true);
-    }
+        try {
+          const result = await Promise.race([
+            fn(),
+            new Promise<never>((_, reject) =>
+              controller.signal.addEventListener('abort', () =>
+                reject(new Error('Request timeout')),
+              ),
+            ),
+          ]);
+          clearTimeout(timeoutId);
+          return result;
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
 
-    return new ProviderError(message, 'unknown', statusCode, false);
-  }
+        const isRateLimit = error instanceof RateLimitError;
+        const isTimeout = lastError.message.includes('timeout') || lastError.message.includes('ETIMEDOUT');
+        const isTransient = isRateLimit || isTimeout || lastError.message.includes('ECONNRESET');
 
-  protected extractStatusCode(err: unknown): number | undefined {
-    if (err && typeof err === 'object') {
-      const obj = err as Record<string, unknown>;
-      if (typeof obj['status'] === 'number') return obj['status'];
-      if (typeof obj['statusCode'] === 'number') return obj['statusCode'];
-      if (
-        obj['response'] &&
-        typeof obj['response'] === 'object' &&
-        typeof (obj['response'] as Record<string, unknown>)['status'] === 'number'
-      ) {
-        return (obj['response'] as Record<string, unknown>)['status'] as number;
-      }
-    }
-    return undefined;
-  }
+        if (!isTransient) {
+          throw error;
+        }
 
-  protected extractRetryAfter(err: unknown): number | undefined {
-    if (err && typeof err === 'object') {
-      const obj = err as Record<string, unknown>;
-      const headers =
-        (obj['headers'] as Record<string, string> | undefined) ??
-        ((obj['response'] as Record<string, unknown> | undefined)?.['headers'] as
-          | Record<string, string>
-          | undefined);
-      if (headers) {
-        const retryAfter = headers['retry-after'];
-        if (retryAfter) {
-          const seconds = parseFloat(retryAfter);
-          if (!isNaN(seconds)) return seconds * 1000;
+        if (attempt < this.maxRetries - 1) {
+          const backoffMs = this.initialBackoffMs * Math.pow(2, attempt);
+          const jitterMs = Math.random() * 1000;
+          const totalWaitMs = backoffMs + jitterMs;
+
+          logger.debug(
+            `${operationName} failed with ${lastError.message}, retrying in ${totalWaitMs.toFixed(0)}ms (attempt ${attempt + 1}/${this.maxRetries - 1})`,
+          );
+
+          await new Promise((resolve) => setTimeout(resolve, totalWaitMs));
         }
       }
     }
-    return undefined;
+
+    throw new LLMError(
+      `${operationName} failed after ${this.maxRetries} attempts: ${lastError?.message || 'unknown error'}`,
+      { cause: lastError },
+    );
   }
 
-  protected computeRetryDelay(attempt: number, retryAfterMs?: number): number {
-    if (retryAfterMs && retryAfterMs > 0) {
-      return Math.min(retryAfterMs, this.retryConfig.maxDelayMs);
-    }
-    const exponentialDelay =
-      this.retryConfig.initialDelayMs *
-      Math.pow(this.retryConfig.backoffMultiplier, attempt - 1);
-    const jitter = exponentialDelay * 0.25 * (Math.random() * 2 - 1);
-    return Math.min(exponentialDelay + jitter, this.retryConfig.maxDelayMs);
-  }
-
-  protected sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  /** Extract text from message content, handling both string and block formats. */
-  protected getTextContent(
-    content: string | Array<{ type: string; text?: string }>,
-  ): string {
-    if (typeof content === 'string') return content;
-    return content
-      .filter((b) => b.type === 'text' && b.text)
-      .map((b) => b.text!)
-      .join('');
-  }
-
-  protected logRequest(_request: LLMRequest, _attempt: number): void {
-    // Override in subclasses for custom logging
-  }
-
-  protected logResponse(_durationMs: number, _attempt: number): void {
-    // Override in subclasses for custom logging
-  }
-
-  protected logRetry(_attempt: number, _delayMs: number, _error: ProviderError): void {
-    // Override in subclasses for custom logging
-  }
+  abstract complete(request: LLMRequest): Promise<LLMResponse>;
+  abstract stream(request: LLMRequest): AsyncIterable<LLMStreamChunk>;
 }
