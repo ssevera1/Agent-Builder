@@ -1,119 +1,133 @@
 /**
- * Structured logger built on pino.
- * Reads log level from the LOG_LEVEL or NODE_ENV environment variables.
+ * Structured logging utility with context awareness and error tracking.
  */
 
-import pino from 'pino';
-import type { Logger as PinoLogger, LoggerOptions as PinoLoggerOptions } from 'pino';
+import { writeFileSync, appendFileSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/** Supported log levels. */
-export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'silent';
-
-/** Options for creating a logger. */
-export interface LoggerOptions {
-  /** Log level. Defaults to LOG_LEVEL env var, or 'info'. */
-  level?: LogLevel;
-  /** Whether to enable pretty-printing (for local dev). Defaults to NODE_ENV !== 'production'. */
-  pretty?: boolean;
-  /** Additional pino options to merge. */
-  pinoOptions?: PinoLoggerOptions;
+export enum LogLevel {
+  DEBUG = 0,
+  INFO = 1,
+  WARN = 2,
+  ERROR = 3,
 }
 
-/** Re-export pino's Logger type for consumers. */
-export type Logger = PinoLogger;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Determine the default log level from environment variables.
- */
-function resolveLevel(explicit?: LogLevel): string {
-  if (explicit) return explicit;
-
-  const envLevel = process.env['LOG_LEVEL'];
-  if (envLevel) return envLevel;
-
-  const nodeEnv = process.env['NODE_ENV'];
-  if (nodeEnv === 'test') return 'silent';
-  if (nodeEnv === 'production') return 'info';
-
-  return 'debug';
+interface LogEntry {
+  timestamp: string;
+  level: string;
+  message: string;
+  context?: Record<string, unknown>;
+  error?: string;
 }
 
-/**
- * Determine whether to pretty-print from environment.
- */
-function resolvePretty(explicit?: boolean): boolean {
-  if (explicit !== undefined) return explicit;
-  return process.env['NODE_ENV'] !== 'production';
-}
+class Logger {
+  private level: LogLevel = LogLevel.INFO;
+  private logFile: string | null = null;
+  private contextStack: Record<string, unknown>[] = [];
 
-// ---------------------------------------------------------------------------
-// Factory
-// ---------------------------------------------------------------------------
+  constructor() {
+    const logLevel = process.env.LOG_LEVEL?.toUpperCase();
+    if (logLevel && LogLevel[logLevel as keyof typeof LogLevel] !== undefined) {
+      this.level = LogLevel[logLevel as keyof typeof LogLevel];
+    }
 
-/**
- * Create a structured logger.
- *
- * @param name - Logger name (appears in every log line as `name`).
- * @param options - Configuration options.
- * @returns A pino Logger instance.
- *
- * @example
- * ```ts
- * const log = createLogger('agent-runtime');
- * log.info({ agentId: 'abc' }, 'Agent started');
- *
- * const child = log.child({ sessionId: 'xyz' });
- * child.debug('Processing turn');
- * ```
- */
-export function createLogger(name: string, options: LoggerOptions = {}): Logger {
-  const level = resolveLevel(options.level);
-  const pretty = resolvePretty(options.pretty);
-
-  const pinoOptions: PinoLoggerOptions = {
-    name,
-    level,
-    ...options.pinoOptions,
-  };
-
-  // In non-production environments, use pino-pretty if available.
-  // We use pino's built-in transport mechanism.
-  if (pretty) {
-    pinoOptions.transport = {
-      target: 'pino/file',
-      options: { destination: 1 }, // stdout
-    };
+    const logPath = process.env.LOG_FILE_PATH;
+    if (logPath) {
+      try {
+        const dir = dirname(logPath);
+        mkdirSync(dir, { recursive: true });
+        this.logFile = logPath;
+      } catch (err) {
+        console.error(`Failed to initialize log file at ${logPath}:`, err instanceof Error ? err.message : String(err));
+      }
+    }
   }
 
-  return pino(pinoOptions);
+  private shouldLog(level: LogLevel): boolean {
+    return level >= this.level;
+  }
+
+  private formatEntry(entry: LogEntry): string {
+    return JSON.stringify(entry);
+  }
+
+  private write(entry: LogEntry): void {
+    if (!this.logFile) return;
+
+    try {
+      appendFileSync(this.logFile, this.formatEntry(entry) + '\n', { encoding: 'utf-8' });
+    } catch (err) {
+      console.error(`Failed to write to log file: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private createEntry(level: string, message: string, context?: Record<string, unknown>, error?: Error): LogEntry {
+    const entry: LogEntry = {
+      timestamp: new Date().toISOString(),
+      level,
+      message,
+    };
+
+    const merged = { ...context };
+    this.contextStack.forEach((ctx) => {
+      Object.assign(merged, ctx);
+    });
+
+    if (Object.keys(merged).length > 0) {
+      entry.context = merged;
+    }
+
+    if (error) {
+      entry.error = error.stack || error.message;
+    }
+
+    return entry;
+  }
+
+  debug(message: string, context?: Record<string, unknown>): void {
+    if (this.shouldLog(LogLevel.DEBUG)) {
+      const entry = this.createEntry('DEBUG', message, context);
+      console.debug(message, context);
+      this.write(entry);
+    }
+  }
+
+  info(message: string, context?: Record<string, unknown>): void {
+    if (this.shouldLog(LogLevel.INFO)) {
+      const entry = this.createEntry('INFO', message, context);
+      console.info(message, context);
+      this.write(entry);
+    }
+  }
+
+  warn(message: string, context?: Record<string, unknown>): void {
+    if (this.shouldLog(LogLevel.WARN)) {
+      const entry = this.createEntry('WARN', message, context);
+      console.warn(message, context);
+      this.write(entry);
+    }
+  }
+
+  error(message: string, error?: Error, context?: Record<string, unknown>): void {
+    if (this.shouldLog(LogLevel.ERROR)) {
+      const entry = this.createEntry('ERROR', message, context, error);
+      console.error(message, error, context);
+      this.write(entry);
+    }
+  }
+
+  withContext<T>(context: Record<string, unknown>, fn: () => T): T {
+    this.contextStack.push(context);
+    try {
+      return fn();
+    } finally {
+      this.contextStack.pop();
+    }
+  }
+
+  setLevel(level: LogLevel): void {
+    this.level = level;
+  }
 }
 
-/**
- * A no-op logger that silences all output.
- * Useful for testing or when logging is explicitly disabled.
- */
-export function createSilentLogger(name = 'silent'): Logger {
-  return pino({ name, level: 'silent' });
-}
-
-/**
- * Create a child logger with additional context bindings.
- *
- * @param parent - Parent logger instance.
- * @param bindings - Key-value pairs to include in every log line.
- * @returns A child Logger.
- */
-export function createChildLogger(
-  parent: Logger,
-  bindings: Record<string, unknown>,
-): Logger {
-  return parent.child(bindings);
-}
+export const logger = new Logger();
