@@ -40,6 +40,7 @@ export interface RetryConfig {
   initialDelayMs: number;
   maxDelayMs: number;
   backoffMultiplier: number;
+  timeoutMs: number;
 }
 
 const DEFAULT_RETRY_CONFIG: RetryConfig = {
@@ -47,6 +48,7 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
   initialDelayMs: 1000,
   maxDelayMs: 30_000,
   backoffMultiplier: 2,
+  timeoutMs: 120_000,
 };
 
 /**
@@ -83,7 +85,10 @@ export abstract class BaseClient implements LLMClient {
     while (true) {
       try {
         this.logRequest(request, attempt);
-        const stream = this._rawComplete(request);
+        const stream = this.withTimeout(
+          this._rawComplete(request),
+          this.retryConfig.timeoutMs,
+        );
 
         for await (const chunk of stream) {
           if (chunk.type === 'usage' && chunk.usage) {
@@ -232,6 +237,46 @@ export abstract class BaseClient implements LLMClient {
 
   protected sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Wrap an async iterable so a stall aborts it instead of hanging.
+   * The budget applies per chunk, not to the stream as a whole.
+   */
+  protected async *withTimeout<T>(
+    iterable: AsyncIterable<T>,
+    timeoutMs: number,
+  ): AsyncIterable<T> {
+    const iterator = iterable[Symbol.asyncIterator]();
+
+    while (true) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new ProviderError(
+              `Request timeout after ${timeoutMs}ms`,
+              'timeout',
+              undefined,
+              true,
+            ),
+          );
+        }, timeoutMs);
+      });
+
+      const result = await Promise.race([iterator.next(), timeout])
+        .catch(async (err: unknown) => {
+          // Let the provider release the connection before complete() retries.
+          await iterator.return?.();
+          throw err;
+        })
+        .finally(() => clearTimeout(timer));
+
+      if (result.done) {
+        return;
+      }
+      yield result.value;
+    }
   }
 
   /** Extract text from message content, handling both string and block formats. */
