@@ -240,40 +240,43 @@ export abstract class BaseClient implements LLMClient {
   }
 
   /**
-   * Wrap an async iterable with a timeout that rejects if not completed within timeoutMs.
+   * Wrap an async iterable so a stall aborts it instead of hanging.
+   * The budget applies per chunk, not to the stream as a whole.
    */
   protected async *withTimeout<T>(
     iterable: AsyncIterable<T>,
     timeoutMs: number,
   ): AsyncIterable<T> {
     const iterator = iterable[Symbol.asyncIterator]();
-    let isAborted = false;
 
-    const createTimeoutPromise = () =>
-      new Promise<never>(() => {
-        setTimeout(() => {
-          isAborted = true;
+    while (true) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new ProviderError(
+              `Request timeout after ${timeoutMs}ms`,
+              'timeout',
+              undefined,
+              true,
+            ),
+          );
         }, timeoutMs);
       });
 
-    while (!isAborted) {
-      const result = await Promise.race([
-        iterator.next(),
-        createTimeoutPromise(),
-      ]);
+      const result = await Promise.race([iterator.next(), timeout])
+        .catch(async (err: unknown) => {
+          // Let the provider release the connection before complete() retries.
+          await iterator.return?.();
+          throw err;
+        })
+        .finally(() => clearTimeout(timer));
 
       if (result.done) {
         return;
       }
       yield result.value;
     }
-
-    throw new ProviderError(
-      `Request timeout after ${timeoutMs}ms`,
-      'timeout',
-      undefined,
-      true,
-    );
   }
 
   /** Extract text from message content, handling both string and block formats. */
