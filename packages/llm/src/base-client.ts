@@ -40,6 +40,7 @@ export interface RetryConfig {
   initialDelayMs: number;
   maxDelayMs: number;
   backoffMultiplier: number;
+  timeoutMs: number;
 }
 
 const DEFAULT_RETRY_CONFIG: RetryConfig = {
@@ -47,6 +48,7 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
   initialDelayMs: 1000,
   maxDelayMs: 30_000,
   backoffMultiplier: 2,
+  timeoutMs: 120_000,
 };
 
 /**
@@ -83,7 +85,10 @@ export abstract class BaseClient implements LLMClient {
     while (true) {
       try {
         this.logRequest(request, attempt);
-        const stream = this._rawComplete(request);
+        const stream = this.withTimeout(
+          this._rawComplete(request),
+          this.retryConfig.timeoutMs,
+        );
 
         for await (const chunk of stream) {
           if (chunk.type === 'usage' && chunk.usage) {
@@ -232,6 +237,43 @@ export abstract class BaseClient implements LLMClient {
 
   protected sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Wrap an async iterable with a timeout that rejects if not completed within timeoutMs.
+   */
+  protected async *withTimeout<T>(
+    iterable: AsyncIterable<T>,
+    timeoutMs: number,
+  ): AsyncIterable<T> {
+    const iterator = iterable[Symbol.asyncIterator]();
+    let isAborted = false;
+
+    const createTimeoutPromise = () =>
+      new Promise<never>(() => {
+        setTimeout(() => {
+          isAborted = true;
+        }, timeoutMs);
+      });
+
+    while (!isAborted) {
+      const result = await Promise.race([
+        iterator.next(),
+        createTimeoutPromise(),
+      ]);
+
+      if (result.done) {
+        return;
+      }
+      yield result.value;
+    }
+
+    throw new ProviderError(
+      `Request timeout after ${timeoutMs}ms`,
+      'timeout',
+      undefined,
+      true,
+    );
   }
 
   /** Extract text from message content, handling both string and block formats. */
