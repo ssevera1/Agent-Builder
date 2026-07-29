@@ -29,4 +29,8 @@ jobs:
         run: pnpm typecheck
 
       - name: Test
-        run: pnpm test
+        run: |
+          if [ -z "$(git ls-files '*.test.ts' '*.test.tsx' '*.spec.ts' '*.spec.tsx')" ]; then
+            echo "::warning::No test files in this repository yet; vitest has nothing to run."
+          fi
+          pnpm exec turbo run test -- --passWithNoTests
