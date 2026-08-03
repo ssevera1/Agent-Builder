@@ -81,15 +81,27 @@ export function createLogger(name: string, options: LoggerOptions = {}): Logger 
   const pinoOptions: PinoLoggerOptions = {
     name,
     level,
+    formatters: {
+      level: (label) => ({ level: label }),
+      bindings: (bindings) => bindings,
+    },
+    timestamp: pino.stdTimeFunctions.isoTime,
     ...options.pinoOptions,
   };
 
-  // In non-production environments, use pino-pretty if available.
-  // We use pino's built-in transport mechanism.
   if (pretty) {
     pinoOptions.transport = {
+      target: 'pino-pretty',
+      options: {
+        colorize: true,
+        ignore: 'pid,hostname',
+        singleLine: false,
+      },
+    };
+  } else {
+    pinoOptions.transport = {
       target: 'pino/file',
-      options: { destination: 1 }, // stdout
+      options: { destination: 1 },
     };
   }
 
