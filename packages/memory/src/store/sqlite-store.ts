@@ -86,24 +86,29 @@ export class SQLiteVectorStore implements VectorStore {
   // ── Lifecycle ───────────────────────────────────────────────────────────
 
   async initialize(): Promise<void> {
-    this.db = new Database(this.dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('synchronous = NORMAL');
+    try {
+      this.db = new Database(this.dbPath);
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('synchronous = NORMAL');
 
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS "${this.tableName}" (
-        id         TEXT PRIMARY KEY,
-        embedding  BLOB NOT NULL,
-        metadata   TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-    `);
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS "${this.tableName}" (
+          id         TEXT PRIMARY KEY,
+          embedding  BLOB NOT NULL,
+          metadata   TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
 
-    // Create an index on created_at for efficient ordering.
-    this.db.exec(`
-      CREATE INDEX IF NOT EXISTS "idx_${this.tableName}_created_at"
-        ON "${this.tableName}" (created_at);
-    `);
+      // Create an index on created_at for efficient ordering.
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS "idx_${this.tableName}_created_at"
+          ON "${this.tableName}" (created_at);
+      `);
+    } catch (error) {
+      this.db = null;
+      throw new Error(`Failed to initialize SQLiteVectorStore at "${this.dbPath}": ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   // ── CRUD ────────────────────────────────────────────────────────────────
@@ -115,11 +120,15 @@ export class SQLiteVectorStore implements VectorStore {
   ): Promise<void> {
     this.ensureDb();
 
-    const stmt = this.db!.prepare(`
-      INSERT OR REPLACE INTO "${this.tableName}" (id, embedding, metadata)
-      VALUES (?, ?, ?)
-    `);
-    stmt.run(id, embedToBlob(embedding), JSON.stringify(metadata));
+    try {
+      const stmt = this.db!.prepare(`
+        INSERT OR REPLACE INTO "${this.tableName}" (id, embedding, metadata)
+        VALUES (?, ?, ?)
+      `);
+      stmt.run(id, embedToBlob(embedding), JSON.stringify(metadata));
+    } catch (error) {
+      throw new Error(`Failed to insert vector with id "${id}": ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   async search(
@@ -129,55 +138,68 @@ export class SQLiteVectorStore implements VectorStore {
   ): Promise<VectorSearchResult[]> {
     this.ensureDb();
 
-    // Fetch all rows (brute-force). For large stores a more sophisticated
-    // approach (e.g., IVF index) would be warranted.
-    let query = `SELECT id, embedding, metadata FROM "${this.tableName}"`;
-    const params: unknown[] = [];
+    try {
+      // Fetch all rows (brute-force). For large stores a more sophisticated
+      // approach (e.g., IVF index) would be warranted.
+      let query = `SELECT id, embedding, metadata FROM "${this.tableName}"`;
+      const params: unknown[] = [];
 
-    // Apply simple metadata filters via JSON_EXTRACT.
-    if (filter && Object.keys(filter).length > 0) {
-      const conditions: string[] = [];
-      for (const [key, value] of Object.entries(filter)) {
-        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)) {
-          throw new Error(`Invalid filter key "${key}": only alphanumeric characters and underscores are allowed`);
+      // Apply simple metadata filters via JSON_EXTRACT.
+      if (filter && Object.keys(filter).length > 0) {
+        const conditions: string[] = [];
+        for (const [key, value] of Object.entries(filter)) {
+          if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)) {
+            throw new Error(`Invalid filter key "${key}": only alphanumeric characters and underscores are allowed`);
+          }
+          conditions.push(`JSON_EXTRACT(metadata, ?) = ?`);
+          params.push(`$.${key}`, value as string | number);
         }
-        conditions.push(`JSON_EXTRACT(metadata, ?) = ?`);
-        params.push(`$.${key}`, value as string | number);
+        query += ' WHERE ' + conditions.join(' AND ');
       }
-      query += ' WHERE ' + conditions.join(' AND ');
+
+      const rows = this.db!.prepare(query).all(...params) as Array<{
+        id: string;
+        embedding: Buffer;
+        metadata: string;
+      }>;
+
+      // Score and rank
+      const scored: VectorSearchResult[] = [];
+      for (const row of rows) {
+        const storedEmbedding = blobToEmbed(row.embedding);
+        const score = cosineSimilarity(queryEmbedding, storedEmbedding);
+        scored.push({
+          id: row.id,
+          score,
+          metadata: JSON.parse(row.metadata) as Record<string, unknown>,
+        });
+      }
+
+      scored.sort((a, b) => b.score - a.score);
+      return scored.slice(0, topK);
+    } catch (error) {
+      throw new Error(`Search query failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-
-    const rows = this.db!.prepare(query).all(...params) as Array<{
-      id: string;
-      embedding: Buffer;
-      metadata: string;
-    }>;
-
-    // Score and rank
-    const scored: VectorSearchResult[] = [];
-    for (const row of rows) {
-      const storedEmbedding = blobToEmbed(row.embedding);
-      const score = cosineSimilarity(queryEmbedding, storedEmbedding);
-      scored.push({
-        id: row.id,
-        score,
-        metadata: JSON.parse(row.metadata) as Record<string, unknown>,
-      });
-    }
-
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, topK);
   }
 
   async delete(id: string): Promise<void> {
     this.ensureDb();
-    this.db!.prepare(`DELETE FROM "${this.tableName}" WHERE id = ?`).run(id);
+    try {
+      this.db!.prepare(`DELETE FROM "${this.tableName}" WHERE id = ?`).run(id);
+    } catch (error) {
+      throw new Error(`Failed to delete vector with id "${id}": ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   async close(): Promise<void> {
     if (this.db) {
-      this.db.close();
-      this.db = null;
+      try {
+        this.db.close();
+      } catch (error) {
+        throw new Error(`Failed to close database: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        this.db = null;
+      }
     }
   }
 
@@ -186,10 +208,14 @@ export class SQLiteVectorStore implements VectorStore {
   /** Return total number of stored vectors. */
   count(): number {
     this.ensureDb();
-    const row = this.db!
-      .prepare(`SELECT COUNT(*) as cnt FROM "${this.tableName}"`)
-      .get() as { cnt: number };
-    return row.cnt;
+    try {
+      const row = this.db!
+        .prepare(`SELECT COUNT(*) as cnt FROM "${this.tableName}"`)
+        .get() as { cnt: number };
+      return row.cnt;
+    } catch (error) {
+      throw new Error(`Failed to count vectors: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   // ── Internal ────────────────────────────────────────────────────────────
