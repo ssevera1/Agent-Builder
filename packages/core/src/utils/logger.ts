@@ -27,6 +27,35 @@ export interface LoggerOptions {
 export type Logger = PinoLogger;
 
 // ---------------------------------------------------------------------------
+// Context stack for call hierarchy tracking
+// ---------------------------------------------------------------------------
+
+const contextStack: string[] = [];
+
+/**
+ * Push a context onto the stack.
+ * Used internally by withContext to track call hierarchies.
+ */
+function pushContext(context: string): void {
+  contextStack.push(context);
+}
+
+/**
+ * Pop a context from the stack.
+ * Used internally by withContext.
+ */
+function popContext(): void {
+  contextStack.pop();
+}
+
+/**
+ * Get the current context path as a formatted string.
+ */
+function getContextPath(): string {
+  return contextStack.length > 0 ? contextStack.join(' > ') : '';
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -116,4 +145,67 @@ export function createChildLogger(
   bindings: Record<string, unknown>,
 ): Logger {
   return parent.child(bindings);
+}
+
+/**
+ * Execute a function within a named context, automatically tracking
+ * the call hierarchy for structured logging.
+ *
+ * @param context - Context name to push onto the stack.
+ * @param fn - Function to execute.
+ * @returns The result of executing fn.
+ *
+ * @example
+ * ```ts
+ * const result = await withContext('processAgent', async () => {
+ *   return await withContext('loadState', async () => {
+ *     // logs will include 'processAgent > loadState' in context
+ *   });
+ * });
+ * ```
+ */
+export async function withContext<T>(
+  context: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  pushContext(context);
+  try {
+    return await fn();
+  } finally {
+    popContext();
+  }
+}
+
+/**
+ * Synchronous variant of withContext.
+ *
+ * @param context - Context name to push onto the stack.
+ * @param fn - Function to execute.
+ * @returns The result of executing fn.
+ */
+export function withContextSync<T>(
+  context: string,
+  fn: () => T,
+): T {
+  pushContext(context);
+  try {
+    return fn();
+  } finally {
+    popContext();
+  }
+}
+
+/**
+ * Get the current context path.
+ * Intended for use within log bindings to include hierarchy information.
+ *
+ * @returns Formatted context path, or empty string if no context.
+ *
+ * @example
+ * ```ts
+ * log.info({ context: getContext() }, 'message');
+ * ```
+ */
+export function getContext(): string {
+  return getContextPath();
 }
