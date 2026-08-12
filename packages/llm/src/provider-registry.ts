@@ -73,6 +73,15 @@ export class ProviderRegistry {
       );
     }
 
+    if (entry.info.requiresApiKey) {
+      const apiKey = process.env[entry.info.apiKeyEnvVar || ''];
+      if (!apiKey) {
+        throw new Error(
+          `Provider "${providerId}" requires API key. Set environment variable: ${entry.info.apiKeyEnvVar}`,
+        );
+      }
+    }
+
     return entry.factory(modelId, options);
   }
 
