@@ -22,8 +22,45 @@ export interface DispatcherOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Validation Errors
+// ---------------------------------------------------------------------------
+
+class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ValidationError';
+  }
+}
+
+class MalformedArgumentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MalformedArgumentError';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Validate that toolCall has required fields and proper structure.
+ */
+function validateToolCall(toolCall: unknown): toolCall is ToolCall {
+  if (typeof toolCall !== 'object' || toolCall === null) {
+    return false;
+  }
+  const call = toolCall as Record<string, unknown>;
+  return (
+    typeof call.id === 'string' &&
+    call.id.length > 0 &&
+    typeof call.name === 'string' &&
+    call.name.length > 0 &&
+    (call.parameters === undefined ||
+      call.parameters === null ||
+      typeof call.parameters === 'object')
+  );
+}
 
 /**
  * Run an async function with an AbortController-backed timeout.
@@ -108,13 +145,26 @@ export class ToolDispatcher {
 
   /**
    * Execute a single tool call:
-   * 1. Look up the tool in the registry.
-   * 2. Validate input against the Zod schema.
-   * 3. Execute with timeout.
-   * 4. Wrap errors into a `ToolResult`.
+   * 1. Validate tool call structure.
+   * 2. Look up the tool in the registry.
+   * 3. Validate input against the Zod schema.
+   * 4. Execute with timeout.
+   * 5. Wrap errors into a `ToolResult`.
    */
-  async dispatch(toolCall: ToolCall): Promise<ToolResult> {
+  async dispatch(toolCall: unknown): Promise<ToolResult> {
     const start = performance.now();
+
+    // Validate tool call structure
+    if (!validateToolCall(toolCall)) {
+      return {
+        toolCallId: typeof toolCall === 'object' && toolCall !== null && 'id' in toolCall ? (toolCall as any).id : 'unknown',
+        output: '',
+        error: 'Invalid tool call structure: missing or invalid id, name, or parameters.',
+        success: false,
+        durationMs: performance.now() - start,
+      };
+    }
+
     this.onToolCall?.(toolCall);
 
     const tool = this.registry.get(toolCall.name);
@@ -130,8 +180,53 @@ export class ToolDispatcher {
       return result;
     }
 
-    // Validate
-    const validation = this.registry.validate(toolCall.name, toolCall.parameters);
+    // Validate parameters
+    if (toolCall.parameters === undefined || toolCall.parameters === null) {
+      const emptyParams = {};
+      const validation = this.registry.validate(toolCall.name, emptyParams);
+      if (!validation.success) {
+        const errorMessages = validation.errors
+          ?.map((e) => `${e.path ? e.path + ': ' : ''}${e.message}`)
+          .join('; ');
+        const result: ToolResult = {
+          toolCallId: toolCall.id,
+          output: '',
+          error: `Validation failed: ${errorMessages}`,
+          success: false,
+          durationMs: performance.now() - start,
+        };
+        this.onToolResult?.(result);
+        return result;
+      }
+    } else if (typeof toolCall.parameters !== 'object' || Array.isArray(toolCall.parameters)) {
+      const result: ToolResult = {
+        toolCallId: toolCall.id,
+        output: '',
+        error: 'Tool parameters must be an object, not an array or primitive value.',
+        success: false,
+        durationMs: performance.now() - start,
+      };
+      this.onToolResult?.(result);
+      return result;
+    } else {
+      const validation = this.registry.validate(toolCall.name, toolCall.parameters);
+      if (!validation.success) {
+        const errorMessages = validation.errors
+          ?.map((e) => `${e.path ? e.path + ': ' : ''}${e.message}`)
+          .join('; ');
+        const result: ToolResult = {
+          toolCallId: toolCall.id,
+          output: '',
+          error: `Validation failed: ${errorMessages}`,
+          success: false,
+          durationMs: performance.now() - start,
+        };
+        this.onToolResult?.(result);
+        return result;
+      }
+    }
+
+    const validation = this.registry.validate(toolCall.name, toolCall.parameters || {});
     if (!validation.success) {
       const errorMessages = validation.errors
         ?.map((e) => `${e.path ? e.path + ': ' : ''}${e.message}`)
@@ -189,7 +284,7 @@ export class ToolDispatcher {
   /**
    * Execute multiple tool calls in parallel, respecting `maxConcurrent`.
    */
-  async dispatchMany(toolCalls: ToolCall[]): Promise<ToolResult[]> {
+  async dispatchMany(toolCalls: unknown[]): Promise<ToolResult[]> {
     const tasks = toolCalls.map(
       (tc) => () => this.dispatch(tc),
     );
