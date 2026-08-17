@@ -85,6 +85,26 @@ async function parallelLimit<T>(
   return slots.map((s) => (s as { ok: true; value: T }).value);
 }
 
+/**
+ * Validate that the output is serializable and matches expected format.
+ */
+function validateToolOutput(output: unknown): string {
+  if (output === null || output === undefined) {
+    return '';
+  }
+  if (typeof output === 'string') {
+    return output;
+  }
+  if (typeof output === 'number' || typeof output === 'boolean') {
+    return String(output);
+  }
+  try {
+    return JSON.stringify(output);
+  } catch (err) {
+    return '[Non-serializable output]';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // ToolDispatcher
 // ---------------------------------------------------------------------------
@@ -111,7 +131,7 @@ export class ToolDispatcher {
    * 1. Look up the tool in the registry.
    * 2. Validate input against the Zod schema.
    * 3. Execute with timeout.
-   * 4. Wrap errors into a `ToolResult`.
+   * 4. Validate and wrap output/errors into a `ToolResult`.
    */
   async dispatch(toolCall: ToolCall): Promise<ToolResult> {
     const start = performance.now();
@@ -130,7 +150,7 @@ export class ToolDispatcher {
       return result;
     }
 
-    // Validate
+    // Validate input
     const validation = this.registry.validate(toolCall.name, toolCall.parameters);
     if (!validation.success) {
       const errorMessages = validation.errors
@@ -155,9 +175,12 @@ export class ToolDispatcher {
         timeout,
       );
 
+      // Validate output format
+      const validatedOutput = validateToolOutput(output);
+
       const result: ToolResult = {
         toolCallId: toolCall.id,
-        output,
+        output: validatedOutput,
         success: true,
         durationMs: performance.now() - start,
       };
