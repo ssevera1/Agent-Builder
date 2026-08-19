@@ -64,6 +64,16 @@ export class OpenAIClient extends BaseClient {
   protected async *_rawComplete(
     request: LLMRequest,
   ): AsyncIterable<LLMStreamChunk> {
+    // Validate model availability before making API call
+    if (!this.isModelAvailable()) {
+      throw new ProviderError(
+        `Model "${this.modelId}" is not available in OpenAI's catalog. Please verify the model ID is correct.`,
+        'invalid_request',
+        400,
+        false,
+      );
+    }
+
     const messages = this.convertMessages(request);
     const tools = request.tools
       ? this.convertTools(request.tools)
@@ -430,5 +440,9 @@ export class OpenAIClient extends BaseClient {
 
   private isReasoningModel(): boolean {
     return /^(o1|o3|o4)/.test(this.modelId);
+  }
+
+  private isModelAvailable(): boolean {
+    return modelCatalog.getModel(this.providerId, this.modelId) !== undefined;
   }
 }
