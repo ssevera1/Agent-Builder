@@ -68,11 +68,17 @@ export class MemoryManager {
           'An EmbeddingProvider is required when longTermEnabled is true.',
         );
       }
-      this.longTerm = new LongTermMemory({
-        dbPath: this.dbPath,
-        embedder: this.embedder,
-      });
-      await this.longTerm.initialize();
+      try {
+        this.longTerm = new LongTermMemory({
+          dbPath: this.dbPath,
+          embedder: this.embedder,
+        });
+        await this.longTerm.initialize();
+      } catch (error) {
+        throw new Error(
+          `Failed to initialize long-term memory: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
 
     if (this.config.episodicEnabled) {
@@ -81,11 +87,17 @@ export class MemoryManager {
           'An EmbeddingProvider is required when episodicEnabled is true.',
         );
       }
-      this.episodic = new EpisodicMemory({
-        dbPath: this.dbPath,
-        embedder: this.embedder,
-      });
-      await this.episodic.initialize();
+      try {
+        this.episodic = new EpisodicMemory({
+          dbPath: this.dbPath,
+          embedder: this.embedder,
+        });
+        await this.episodic.initialize();
+      } catch (error) {
+        throw new Error(
+          `Failed to initialize episodic memory: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
 
     this.initialised = true;
@@ -120,24 +132,58 @@ export class MemoryManager {
     agentId?: string,
   ): Promise<MemorySearchResult[]> {
     this.ensureLongTerm();
-    return this.longTerm!.search(query, topK ?? this.config.longTermTopK, agentId);
+    try {
+      return await this.longTerm!.search(query, topK ?? this.config.longTermTopK, agentId);
+    } catch (error) {
+      throw new Error(
+        `Long-term memory search failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   async storeLongTerm(entry: MemoryEntry): Promise<void> {
     this.ensureLongTerm();
-    await this.longTerm!.store(entry);
+    if (!entry.embedding) {
+      throw new Error(
+        'MemoryEntry embedding is missing. Entry must have a vector representation.',
+      );
+    }
+    try {
+      await this.longTerm!.store(entry);
+    } catch (error) {
+      throw new Error(
+        `Failed to store long-term memory: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   async deleteLongTerm(id: string): Promise<void> {
     this.ensureLongTerm();
-    await this.longTerm!.delete(id);
+    try {
+      await this.longTerm!.delete(id);
+    } catch (error) {
+      throw new Error(
+        `Failed to delete long-term memory: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   // ── Episodic ────────────────────────────────────────────────────────────
 
   async recordEpisode(episode: Episode): Promise<void> {
     this.ensureEpisodic();
-    await this.episodic!.record(episode);
+    if (!episode.embedding) {
+      throw new Error(
+        'Episode embedding is missing. Episode must have a vector representation.',
+      );
+    }
+    try {
+      await this.episodic!.record(episode);
+    } catch (error) {
+      throw new Error(
+        `Failed to record episode: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   async recallEpisodes(
@@ -146,11 +192,17 @@ export class MemoryManager {
     agentId?: string,
   ): Promise<Episode[]> {
     this.ensureEpisodic();
-    return this.episodic!.recall(
-      query,
-      topK ?? this.config.episodicTopK,
-      agentId ? { agentId } : undefined,
-    );
+    try {
+      return await this.episodic!.recall(
+        query,
+        topK ?? this.config.episodicTopK,
+        agentId ? { agentId } : undefined,
+      );
+    } catch (error) {
+      throw new Error(
+        `Episodic memory recall failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   // ── Internal ────────────────────────────────────────────────────────────
