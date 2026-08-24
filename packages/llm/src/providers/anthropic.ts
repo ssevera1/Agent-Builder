@@ -114,6 +114,14 @@ export class AnthropicClient extends BaseClient {
         case 'content_block_start': {
           const block = event.content_block;
           if (block.type === 'tool_use') {
+            if (!block.id || !block.name) {
+              throw new ProviderError(
+                'Malformed tool_use block: missing id or name',
+                'invalid_response',
+                500,
+                false,
+              );
+            }
             partialToolCalls.set(event.index, {
               id: block.id,
               name: block.name,
@@ -155,6 +163,14 @@ export class AnthropicClient extends BaseClient {
         case 'message_delta': {
           // Final message delta contains usage and stop reason
           const stopReason = event.delta.stop_reason;
+          if (stopReason === null || stopReason === undefined) {
+            throw new ProviderError(
+              'Malformed message_delta event: missing stop_reason',
+              'invalid_response',
+              500,
+              false,
+            );
+          }
           if (event.usage) {
             yield {
               type: 'usage',
@@ -173,15 +189,24 @@ export class AnthropicClient extends BaseClient {
         }
 
         case 'message_start': {
-          if (event.message.usage) {
+          const message = event.message;
+          if (!message.id || !message.content) {
+            throw new ProviderError(
+              'Malformed message_start event: missing id or content',
+              'invalid_response',
+              500,
+              false,
+            );
+          }
+          if (message.usage) {
             yield {
               type: 'usage',
               usage: {
-                inputTokens: event.message.usage.input_tokens,
-                outputTokens: event.message.usage.output_tokens,
+                inputTokens: message.usage.input_tokens,
+                outputTokens: message.usage.output_tokens,
                 totalTokens:
-                  event.message.usage.input_tokens +
-                  event.message.usage.output_tokens,
+                  message.usage.input_tokens +
+                  message.usage.output_tokens,
               },
             };
           }
