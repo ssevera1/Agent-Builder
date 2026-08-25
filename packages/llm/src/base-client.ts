@@ -17,6 +17,7 @@ export type ProviderErrorCode =
   | 'timeout'
   | 'overloaded'
   | 'content_filter'
+  | 'invalid_response'
   | 'unknown';
 
 /**
