@@ -161,16 +161,10 @@ export class AnthropicClient extends BaseClient {
         }
 
         case 'message_delta': {
-          // Final message delta contains usage and stop reason
+          // Final message delta contains usage and stop reason.
+          // `stop_reason` is legitimately `null` in the Anthropic API
+          // (see RawMessageDeltaEvent.Delta); mapStopReason handles it.
           const stopReason = event.delta.stop_reason;
-          if (stopReason === null || stopReason === undefined) {
-            throw new ProviderError(
-              'Malformed message_delta event: missing stop_reason',
-              'invalid_response',
-              500,
-              false,
-            );
-          }
           if (event.usage) {
             yield {
               type: 'usage',
@@ -190,7 +184,8 @@ export class AnthropicClient extends BaseClient {
 
         case 'message_start': {
           const message = event.message;
-          if (!message.id || !message.content) {
+          // `content` is legitimately `[]` here, so only its absence is a fault.
+          if (!message.id || !Array.isArray(message.content)) {
             throw new ProviderError(
               'Malformed message_start event: missing id or content',
               'invalid_response',
