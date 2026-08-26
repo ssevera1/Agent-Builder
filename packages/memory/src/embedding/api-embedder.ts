@@ -27,6 +27,8 @@ export interface APIEmbedderOptions {
   baseUrl?: string;
   /** Maximum number of texts in a single batch request (default: 100). */
   maxBatchSize?: number;
+  /** Request timeout in milliseconds (default: 30000). */
+  timeoutMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -38,6 +40,8 @@ const DEFAULT_DIMENSIONS: Record<string, number> = {
   'text-embedding-3-large': 3_072,
   'text-embedding-ada-002': 1_536,
 };
+
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 // ---------------------------------------------------------------------------
 // APIEmbedder
@@ -51,12 +55,14 @@ export class APIEmbedder implements EmbeddingProvider {
   private readonly model: string;
   private readonly baseUrl: string;
   private readonly maxBatchSize: number;
+  private readonly timeoutMs: number;
   private readonly requestedDimensions: number | undefined;
 
   constructor(options?: APIEmbedderOptions) {
     this.model = options?.model ?? 'text-embedding-3-small';
     this.baseUrl = (options?.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '');
     this.maxBatchSize = options?.maxBatchSize ?? 100;
+    this.timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.requestedDimensions = options?.dimensions;
 
     const key = options?.apiKey ?? process.env['OPENAI_API_KEY'];
@@ -113,32 +119,47 @@ export class APIEmbedder implements EmbeddingProvider {
       body['dimensions'] = this.requestedDimensions;
     }
 
-    const response = await fetch(`${this.baseUrl}/embeddings`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => '');
-      throw new Error(
-        `OpenAI Embeddings API error (${response.status}): ${errorBody}`,
-      );
+    try {
+      const response = await fetch(`${this.baseUrl}/embeddings`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        throw new Error(
+          `OpenAI Embeddings API error (${response.status}): ${errorBody}`,
+        );
+      }
+
+      const data = (await response.json()) as {
+        data?: Array<{ embedding: number[]; index: number }>;
+      };
+
+      if (!data.data || !Array.isArray(data.data)) {
+        throw new Error('Unexpected response shape from OpenAI Embeddings API.');
+      }
+
+      // The API may return items out of order; sort by index.
+      const sorted = data.data.sort((a, b) => a.index - b.index);
+      return sorted.map((item) => item.embedding);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(
+          `Embeddings API request timed out after ${this.timeoutMs}ms`,
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const data = (await response.json()) as {
-      data?: Array<{ embedding: number[]; index: number }>;
-    };
-
-    if (!data.data || !Array.isArray(data.data)) {
-      throw new Error('Unexpected response shape from OpenAI Embeddings API.');
-    }
-
-    // The API may return items out of order; sort by index.
-    const sorted = data.data.sort((a, b) => a.index - b.index);
-    return sorted.map((item) => item.embedding);
   }
 }
