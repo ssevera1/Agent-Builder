@@ -37,6 +37,9 @@ const contextStack: string[] = [];
  * Used internally by withContext to track call hierarchies.
  */
 function pushContext(context: string): void {
+  if (!context || typeof context !== 'string' || context.trim().length === 0) {
+    throw new Error('Context must be a non-empty string');
+  }
   contextStack.push(context);
 }
 
