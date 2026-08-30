@@ -67,6 +67,19 @@ function validateString(value: unknown, label: string): void {
 }
 
 /**
+ * Validate that a value is not null or undefined.
+ *
+ * @param value - The value to validate.
+ * @param label - Label for error messages.
+ * @throws {TokenCountError} If value is null or undefined.
+ */
+function validateNotNull(value: unknown, label: string): void {
+  if (value === null || value === undefined) {
+    throw new TokenCountError(`${label} cannot be null or undefined`);
+  }
+}
+
+/**
  * Resolve the characters-per-token ratio for a given model identifier.
  * Matches on prefix (e.g., "claude-sonnet-4-20250514" matches "claude").
  */
@@ -101,6 +114,7 @@ function getRatio(model?: string): number {
  * ```
  */
 export function estimateTokens(text: string, model?: string): number {
+  validateNotNull(text, 'text');
   validateString(text, 'text');
 
   if (text.length === 0) {
@@ -132,6 +146,8 @@ export function estimateMessagesTokens(
   messages: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }>,
   model?: string,
 ): number {
+  validateNotNull(messages, 'messages');
+  
   if (!Array.isArray(messages)) {
     throw new TokenCountError('messages must be an array');
   }
@@ -209,6 +225,8 @@ export function fitsInContext(
   reserveForOutput: number = 4096,
   model?: string,
 ): { fits: boolean; estimatedTokens: number; availableTokens: number } {
+  validateNotNull(contextWindow, 'contextWindow');
+  validateNotNull(reserveForOutput, 'reserveForOutput');
   validatePositiveNumber(contextWindow, 'contextWindow');
   validatePositiveNumber(reserveForOutput, 'reserveForOutput');
 
