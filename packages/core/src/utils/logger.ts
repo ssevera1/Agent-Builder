@@ -63,6 +63,17 @@ function getContextPath(): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * Validate context keys in a record to ensure none are empty or invalid.
+ */
+function validateContextKeys(bindings: Record<string, unknown>): void {
+  for (const key of Object.keys(bindings)) {
+    if (!key || typeof key !== 'string' || key.trim().length === 0) {
+      throw new Error(`Invalid context key: keys must be non-empty strings`);
+    }
+  }
+}
+
+/**
  * Determine the default log level from environment variables.
  */
 function resolveLevel(explicit?: LogLevel): string {
@@ -159,6 +170,7 @@ export function createChildLogger(
   parent: Logger,
   bindings: Record<string, unknown>,
 ): Logger {
+  validateContextKeys(bindings);
   return parent.child(bindings);
 }
 
