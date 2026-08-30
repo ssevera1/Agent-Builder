@@ -92,7 +92,7 @@ function getRatio(model?: string): number {
  * @param text - The text to estimate tokens for.
  * @param model - Optional model identifier for model-specific ratios.
  * @returns Estimated token count (always at least 1 for non-empty strings).
- * @throws {TokenCountError} If text is not a string.
+ * @throws {TokenCountError} If text is not a string, or model is provided and is not a string.
  *
  * @example
  * ```ts
@@ -102,6 +102,9 @@ function getRatio(model?: string): number {
  */
 export function estimateTokens(text: string, model?: string): number {
   validateString(text, 'text');
+  if (model !== undefined) {
+    validateString(model, 'model');
+  }
 
   if (text.length === 0) {
     return 0;
