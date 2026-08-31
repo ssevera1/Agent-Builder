@@ -22,6 +22,24 @@ export interface DispatcherOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+export class ToolInputValidationError extends Error {
+  constructor(toolName: string, message: string) {
+    super(`Tool "${toolName}" input validation failed: ${message}`);
+    this.name = 'ToolInputValidationError';
+  }
+}
+
+export class ToolOutputValidationError extends Error {
+  constructor(toolName: string, message: string) {
+    super(`Tool "${toolName}" output validation failed: ${message}`);
+    this.name = 'ToolOutputValidationError';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -86,6 +104,18 @@ async function parallelLimit<T>(
 }
 
 /**
+ * Validate that the input parameters are an object or null.
+ */
+function validateToolInput(input: unknown): void {
+  if (input === null || input === undefined) {
+    return;
+  }
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Tool input must be an object or null');
+  }
+}
+
+/**
  * Validate that the output is serializable and matches expected format.
  */
 function validateToolOutput(output: unknown): string {
@@ -93,16 +123,29 @@ function validateToolOutput(output: unknown): string {
     return '';
   }
   if (typeof output === 'string') {
+    if (output.length > 1_000_000) {
+      throw new Error('Tool output exceeds maximum string length (1MB)');
+    }
     return output;
   }
   if (typeof output === 'number' || typeof output === 'boolean') {
     return String(output);
   }
-  try {
-    return JSON.stringify(output);
-  } catch (err) {
-    return '[Non-serializable output]';
+  if (typeof output === 'object') {
+    try {
+      const serialized = JSON.stringify(output);
+      if (serialized.length > 1_000_000) {
+        throw new Error('Tool output exceeds maximum serialized length (1MB)');
+      }
+      return serialized;
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('maximum')) {
+        throw err;
+      }
+      throw new Error('Tool output is not JSON serializable');
+    }
   }
+  throw new Error(`Tool output has unexpected type: ${typeof output}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +193,23 @@ export class ToolDispatcher {
       return result;
     }
 
-    // Validate input
+    // Validate input shape
+    try {
+      validateToolInput(toolCall.parameters);
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      const result: ToolResult = {
+        toolCallId: toolCall.id,
+        output: '',
+        error: `Tool "${toolCall.name}" input validation failed: ${errorMessage}`,
+        success: false,
+        durationMs: performance.now() - start,
+      };
+      this.onToolResult?.(result);
+      return result;
+    }
+
+    // Validate input against schema
     const validation = this.registry.validate(toolCall.name, toolCall.parameters);
     if (!validation.success) {
       const errorMessages = validation.errors
@@ -176,7 +235,13 @@ export class ToolDispatcher {
       );
 
       // Validate output format
-      const validatedOutput = validateToolOutput(output);
+      let validatedOutput: string;
+      try {
+        validatedOutput = validateToolOutput(output);
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        throw new ToolOutputValidationError(toolCall.name, errorMessage);
+      }
 
       const result: ToolResult = {
         toolCallId: toolCall.id,
@@ -189,11 +254,15 @@ export class ToolDispatcher {
     } catch (err: unknown) {
       const isAbort =
         err instanceof DOMException && err.name === 'AbortError';
+      const isOutputValidation =
+        err instanceof ToolOutputValidationError;
       const errorMessage = isAbort
         ? `Tool "${toolCall.name}" timed out after ${timeout}ms.`
-        : err instanceof Error
-          ? err.message
-          : String(err);
+        : isOutputValidation || err instanceof ToolInputValidationError
+          ? (err as Error).message
+          : err instanceof Error
+            ? err.message
+            : String(err);
 
       const result: ToolResult = {
         toolCallId: toolCall.id,
