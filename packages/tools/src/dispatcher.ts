@@ -15,6 +15,14 @@ export interface DispatcherOptions {
   defaultTimeout?: number;
   /** Maximum number of tools to execute concurrently in `dispatchMany` (default: 5). */
   maxConcurrent?: number;
+  /**
+   * Maximum length (in UTF-16 code units) of a tool's serialized output
+   * before it is rejected as too large. Unset (the default) means no limit,
+   * matching the pre-validation behavior — built-in tools like `file_system`
+   * already enforce their own size caps, so an unset default avoids
+   * double-capping their output at a smaller, unrelated threshold.
+   */
+  maxOutputChars?: number;
   /** Optional callback invoked before a tool starts executing. */
   onToolCall?: (toolCall: ToolCall) => void;
   /** Optional callback invoked after a tool finishes executing. */
@@ -104,27 +112,30 @@ async function parallelLimit<T>(
 }
 
 /**
- * Validate that the input parameters are an object or null.
+ * Validate that the input parameters are an object or null/undefined.
  */
-function validateToolInput(input: unknown): void {
+function validateToolInput(toolName: string, input: unknown): void {
   if (input === null || input === undefined) {
     return;
   }
   if (typeof input !== 'object' || Array.isArray(input)) {
-    throw new Error('Tool input must be an object or null');
+    throw new ToolInputValidationError(toolName, 'input must be an object, null, or undefined');
   }
 }
 
 /**
  * Validate that the output is serializable and matches expected format.
+ * `maxOutputChars` is only enforced when set — built-in tools already cap
+ * their own output size, so leaving it unset avoids re-rejecting output
+ * that a tool's own (differently sized) limit already allowed through.
  */
-function validateToolOutput(output: unknown): string {
+function validateToolOutput(output: unknown, maxOutputChars?: number): string {
   if (output === null || output === undefined) {
     return '';
   }
   if (typeof output === 'string') {
-    if (output.length > 1_000_000) {
-      throw new Error('Tool output exceeds maximum string length (1MB)');
+    if (maxOutputChars !== undefined && output.length > maxOutputChars) {
+      throw new Error(`Tool output exceeds maximum string length (${maxOutputChars} chars)`);
     }
     return output;
   }
@@ -132,18 +143,17 @@ function validateToolOutput(output: unknown): string {
     return String(output);
   }
   if (typeof output === 'object') {
+    let serialized: string;
     try {
-      const serialized = JSON.stringify(output);
-      if (serialized.length > 1_000_000) {
-        throw new Error('Tool output exceeds maximum serialized length (1MB)');
-      }
-      return serialized;
+      serialized = JSON.stringify(output);
     } catch (err) {
-      if (err instanceof Error && err.message.includes('maximum')) {
-        throw err;
-      }
-      throw new Error('Tool output is not JSON serializable');
+      const cause = err instanceof Error ? err.message : String(err);
+      throw new Error(`Tool output is not JSON serializable: ${cause}`);
     }
+    if (maxOutputChars !== undefined && serialized.length > maxOutputChars) {
+      throw new Error(`Tool output exceeds maximum serialized length (${maxOutputChars} chars)`);
+    }
+    return serialized;
   }
   throw new Error(`Tool output has unexpected type: ${typeof output}`);
 }
@@ -156,6 +166,7 @@ export class ToolDispatcher {
   private readonly registry: ToolRegistry;
   private readonly defaultTimeout: number;
   private readonly maxConcurrent: number;
+  private readonly maxOutputChars?: number;
   private readonly onToolCall?: (toolCall: ToolCall) => void;
   private readonly onToolResult?: (result: ToolResult) => void;
 
@@ -163,6 +174,7 @@ export class ToolDispatcher {
     this.registry = registry;
     this.defaultTimeout = options?.defaultTimeout ?? 30_000;
     this.maxConcurrent = options?.maxConcurrent ?? 5;
+    this.maxOutputChars = options?.maxOutputChars;
     this.onToolCall = options?.onToolCall;
     this.onToolResult = options?.onToolResult;
   }
@@ -195,13 +207,13 @@ export class ToolDispatcher {
 
     // Validate input shape
     try {
-      validateToolInput(toolCall.parameters);
+      validateToolInput(toolCall.name, toolCall.parameters);
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       const result: ToolResult = {
         toolCallId: toolCall.id,
         output: '',
-        error: `Tool "${toolCall.name}" input validation failed: ${errorMessage}`,
+        error: errorMessage,
         success: false,
         durationMs: performance.now() - start,
       };
@@ -237,7 +249,7 @@ export class ToolDispatcher {
       // Validate output format
       let validatedOutput: string;
       try {
-        validatedOutput = validateToolOutput(output);
+        validatedOutput = validateToolOutput(output, this.maxOutputChars);
       } catch (err: unknown) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         throw new ToolOutputValidationError(toolCall.name, errorMessage);
@@ -254,15 +266,11 @@ export class ToolDispatcher {
     } catch (err: unknown) {
       const isAbort =
         err instanceof DOMException && err.name === 'AbortError';
-      const isOutputValidation =
-        err instanceof ToolOutputValidationError;
       const errorMessage = isAbort
         ? `Tool "${toolCall.name}" timed out after ${timeout}ms.`
-        : isOutputValidation || err instanceof ToolInputValidationError
-          ? (err as Error).message
-          : err instanceof Error
-            ? err.message
-            : String(err);
+        : err instanceof Error
+          ? err.message
+          : String(err);
 
       const result: ToolResult = {
         toolCallId: toolCall.id,

@@ -8,7 +8,11 @@ export { ToolRegistry } from './registry.js';
 export type { RegisteredTool, ValidationResult } from './registry.js';
 
 // ── Dispatcher ────────────────────────────────────────────────────────────
-export { ToolDispatcher } from './dispatcher.js';
+export {
+  ToolDispatcher,
+  ToolInputValidationError,
+  ToolOutputValidationError,
+} from './dispatcher.js';
 export type { DispatcherOptions } from './dispatcher.js';
 
 // ── Built-in tools ────────────────────────────────────────────────────────
