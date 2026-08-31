@@ -116,6 +116,10 @@ export class OpenAIClient extends BaseClient {
     >();
 
     for await (const chunk of stream) {
+      if (!this.isValidStreamChunk(chunk)) {
+        continue;
+      }
+
       const choice = chunk.choices[0];
 
       if (choice) {
@@ -430,5 +434,17 @@ export class OpenAIClient extends BaseClient {
 
   private isReasoningModel(): boolean {
     return /^(o1|o3|o4)/.test(this.modelId);
+  }
+
+  private isValidStreamChunk(
+    chunk: OpenAI.ChatCompletionChunk,
+  ): chunk is OpenAI.ChatCompletionChunk {
+    if (!chunk || typeof chunk !== 'object') {
+      return false;
+    }
+    if (!Array.isArray(chunk.choices)) {
+      return false;
+    }
+    return true;
   }
 }
