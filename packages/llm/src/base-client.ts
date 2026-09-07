@@ -80,6 +80,15 @@ export abstract class BaseClient implements LLMClient {
   }
 
   async *complete(request: LLMRequest): AsyncIterable<LLMStreamChunk> {
+    if (!request) {
+      yield {
+        type: 'error' as const,
+        error: { code: 'invalid_request', message: 'LLMRequest is null or undefined' },
+      };
+      yield { type: 'done' as const, finishReason: 'error' as const };
+      return;
+    }
+
     const startTime = Date.now();
     let attempt = 0;
 
@@ -92,10 +101,18 @@ export abstract class BaseClient implements LLMClient {
         );
 
         for await (const chunk of stream) {
+          if (!chunk) {
+            throw new ProviderError(
+              'Received null or undefined chunk from model',
+              'invalid_response',
+              undefined,
+              false,
+            );
+          }
           if (chunk.type === 'usage' && chunk.usage) {
-            this._totalUsage.inputTokens += chunk.usage.inputTokens;
-            this._totalUsage.outputTokens += chunk.usage.outputTokens;
-            this._totalUsage.totalTokens += chunk.usage.totalTokens;
+            this._totalUsage.inputTokens += chunk.usage.inputTokens ?? 0;
+            this._totalUsage.outputTokens += chunk.usage.outputTokens ?? 0;
+            this._totalUsage.totalTokens += chunk.usage.totalTokens ?? 0;
           }
           yield chunk;
         }
