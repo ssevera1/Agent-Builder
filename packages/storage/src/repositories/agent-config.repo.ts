@@ -33,6 +33,19 @@ export interface ListAgentConfigOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+export class DeserializationError extends Error {
+  constructor(id: string, cause: unknown) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    super(`Failed to deserialize AgentConfig "${id}": ${message}`);
+    this.name = 'DeserializationError';
+    this.cause = cause;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Repository
 // ---------------------------------------------------------------------------
 
@@ -83,6 +96,7 @@ export class AgentConfigRepository {
    * Retrieve an agent configuration by ID.
    *
    * @returns The AgentConfig or null if not found.
+   * @throws DeserializationError if config_json is corrupted or schema-mismatched.
    */
   getById(id: string): AgentConfig | null {
     const stmt = this.db.raw.prepare('SELECT * FROM agent_configs WHERE id = ?');
@@ -95,6 +109,7 @@ export class AgentConfigRepository {
    * Retrieve an agent configuration by name.
    *
    * @returns The AgentConfig or null if not found.
+   * @throws DeserializationError if config_json is corrupted or schema-mismatched.
    */
   getByName(name: string): AgentConfig | null {
     const stmt = this.db.raw.prepare('SELECT * FROM agent_configs WHERE name = ?');
@@ -105,6 +120,8 @@ export class AgentConfigRepository {
 
   /**
    * List agent configurations with optional pagination and search.
+   *
+   * @throws DeserializationError if any config_json is corrupted or schema-mismatched.
    */
   list(options?: ListAgentConfigOptions): AgentConfig[] {
     const limit = options?.limit ?? 100;
@@ -142,6 +159,8 @@ export class AgentConfigRepository {
    *
    * Merges the provided partial updates into the existing config,
    * updates the `updatedAt` timestamp, and persists the changes.
+   *
+   * @throws DeserializationError if existing config_json is corrupted or schema-mismatched.
    */
   update(id: string, updates: Partial<AgentConfig>): void {
     const existing = this.getById(id);
@@ -194,13 +213,41 @@ export class AgentConfigRepository {
   // -----------------------------------------------------------------------
 
   private deserialize(row: AgentConfigRow): AgentConfig {
-    const parsed = JSON.parse(row.config_json) as Record<string, unknown>;
+    let parsedUnknown: unknown;
+    try {
+      parsedUnknown = JSON.parse(row.config_json);
+    } catch (err) {
+      throw new DeserializationError(row.id, new Error('Invalid JSON: ' + (err instanceof Error ? err.message : String(err))));
+    }
 
-    // Ensure dates are proper Date objects
+    if (parsedUnknown === null || typeof parsedUnknown !== 'object' || Array.isArray(parsedUnknown)) {
+      throw new DeserializationError(row.id, new Error('config_json is not an object'));
+    }
+
+    const parsed = parsedUnknown as Record<string, unknown>;
+    const createdAt = parsed['createdAt'];
+    const updatedAt = parsed['updatedAt'];
+
+    if (typeof createdAt !== 'string') {
+      throw new DeserializationError(row.id, new Error('createdAt must be a string'));
+    }
+    if (typeof updatedAt !== 'string') {
+      throw new DeserializationError(row.id, new Error('updatedAt must be a string'));
+    }
+
+    const createdAtDate = new Date(createdAt);
+    const updatedAtDate = new Date(updatedAt);
+    if (isNaN(createdAtDate.getTime())) {
+      throw new DeserializationError(row.id, new Error('createdAt is not a valid date'));
+    }
+    if (isNaN(updatedAtDate.getTime())) {
+      throw new DeserializationError(row.id, new Error('updatedAt is not a valid date'));
+    }
+
     return {
       ...parsed,
-      createdAt: new Date(parsed['createdAt'] as string),
-      updatedAt: new Date(parsed['updatedAt'] as string),
+      createdAt: createdAtDate,
+      updatedAt: updatedAtDate,
     } as AgentConfig;
   }
 }
