@@ -7,7 +7,7 @@
 export { Database } from './database.js';
 
 // Repositories
-export { AgentConfigRepository } from './repositories/agent-config.repo.js';
+export { AgentConfigRepository, DeserializationError } from './repositories/agent-config.repo.js';
 export type { ListAgentConfigOptions } from './repositories/agent-config.repo.js';
 
 export { SessionRepository } from './repositories/session.repo.js';

@@ -36,7 +36,7 @@ export interface ListAgentConfigOptions {
 // Errors
 // ---------------------------------------------------------------------------
 
-class DeserializationError extends Error {
+export class DeserializationError extends Error {
   constructor(id: string, cause: unknown) {
     const message = cause instanceof Error ? cause.message : String(cause);
     super(`Failed to deserialize AgentConfig "${id}": ${message}`);
@@ -213,13 +213,18 @@ export class AgentConfigRepository {
   // -----------------------------------------------------------------------
 
   private deserialize(row: AgentConfigRow): AgentConfig {
-    let parsed: Record<string, unknown>;
+    let parsedUnknown: unknown;
     try {
-      parsed = JSON.parse(row.config_json) as Record<string, unknown>;
+      parsedUnknown = JSON.parse(row.config_json);
     } catch (err) {
       throw new DeserializationError(row.id, new Error('Invalid JSON: ' + (err instanceof Error ? err.message : String(err))));
     }
 
+    if (parsedUnknown === null || typeof parsedUnknown !== 'object' || Array.isArray(parsedUnknown)) {
+      throw new DeserializationError(row.id, new Error('config_json is not an object'));
+    }
+
+    const parsed = parsedUnknown as Record<string, unknown>;
     const createdAt = parsed['createdAt'];
     const updatedAt = parsed['updatedAt'];
 
@@ -230,19 +235,13 @@ export class AgentConfigRepository {
       throw new DeserializationError(row.id, new Error('updatedAt must be a string'));
     }
 
-    let createdAtDate: Date;
-    let updatedAtDate: Date;
-    try {
-      createdAtDate = new Date(createdAt);
-      updatedAtDate = new Date(updatedAt);
-      if (isNaN(createdAtDate.getTime())) {
-        throw new Error('createdAt is not a valid date');
-      }
-      if (isNaN(updatedAtDate.getTime())) {
-        throw new Error('updatedAt is not a valid date');
-      }
-    } catch (err) {
-      throw new DeserializationError(row.id, err);
+    const createdAtDate = new Date(createdAt);
+    const updatedAtDate = new Date(updatedAt);
+    if (isNaN(createdAtDate.getTime())) {
+      throw new DeserializationError(row.id, new Error('createdAt is not a valid date'));
+    }
+    if (isNaN(updatedAtDate.getTime())) {
+      throw new DeserializationError(row.id, new Error('updatedAt is not a valid date'));
     }
 
     return {
