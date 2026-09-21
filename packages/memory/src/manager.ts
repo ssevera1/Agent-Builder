@@ -68,6 +68,13 @@ export class MemoryManager {
           'An EmbeddingProvider is required when longTermEnabled is true.',
         );
       }
+      try {
+        await this.validateEmbedder();
+      } catch (error) {
+        throw new Error(
+          `EmbeddingProvider validation failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       this.longTerm = new LongTermMemory({
         dbPath: this.dbPath,
         embedder: this.embedder,
@@ -80,6 +87,15 @@ export class MemoryManager {
         throw new Error(
           'An EmbeddingProvider is required when episodicEnabled is true.',
         );
+      }
+      if (!this.config.longTermEnabled) {
+        try {
+          await this.validateEmbedder();
+        } catch (error) {
+          throw new Error(
+            `EmbeddingProvider validation failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
       }
       this.episodic = new EpisodicMemory({
         dbPath: this.dbPath,
@@ -167,6 +183,29 @@ export class MemoryManager {
     if (!this.episodic) {
       throw new Error(
         'Episodic memory is not enabled. Set episodicEnabled: true in MemoryConfig and call initialize().',
+      );
+    }
+  }
+
+  private async validateEmbedder(): Promise<void> {
+    if (!this.embedder) {
+      throw new Error('EmbeddingProvider is not available.');
+    }
+
+    const testText = 'validation';
+    const embedding = await this.embedder.embed(testText);
+
+    if (!embedding) {
+      throw new Error('EmbeddingProvider returned null or undefined embedding.');
+    }
+
+    if (!Array.isArray(embedding) || embedding.length === 0) {
+      throw new Error('EmbeddingProvider returned invalid embedding format.');
+    }
+
+    if (!embedding.every((val) => typeof val === 'number' && isFinite(val))) {
+      throw new Error(
+        'EmbeddingProvider returned non-numeric or non-finite values.',
       );
     }
   }
