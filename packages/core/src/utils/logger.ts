@@ -46,8 +46,12 @@ function pushContext(context: string): void {
 /**
  * Pop a context from the stack.
  * Used internally by withContext.
+ * Throws an error if the stack is empty to prevent underflow.
  */
 function popContext(): void {
+  if (contextStack.length === 0) {
+    throw new Error('Context stack underflow: attempted to pop without matching push()');
+  }
   contextStack.pop();
 }
 
