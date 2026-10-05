@@ -18,6 +18,7 @@ export type ProviderErrorCode =
   | 'overloaded'
   | 'content_filter'
   | 'invalid_response'
+  | 'model_unavailable'
   | 'unknown';
 
 /**
@@ -84,6 +85,16 @@ export abstract class BaseClient implements LLMClient {
       yield {
         type: 'error' as const,
         error: { code: 'invalid_request', message: 'LLMRequest is null or undefined' },
+      };
+      yield { type: 'done' as const, finishReason: 'error' as const };
+      return;
+    }
+
+    const availabilityError = await this.checkModelAvailability();
+    if (availabilityError) {
+      yield {
+        type: 'error' as const,
+        error: { code: availabilityError.code, message: availabilityError.message },
       };
       yield { type: 'done' as const, finishReason: 'error' as const };
       return;
@@ -163,6 +174,15 @@ export abstract class BaseClient implements LLMClient {
   protected abstract _rawCountTokens(text: string): Promise<number>;
 
   protected abstract _rawListModels(): Promise<ModelInfo[]>;
+
+  /**
+   * Check if the model is available and credentials are valid.
+   * Returns a ProviderError if validation fails, otherwise returns undefined.
+   * Subclasses can override to implement provider-specific availability checks.
+   */
+  protected async checkModelAvailability(): Promise<ProviderError | undefined> {
+    return undefined;
+  }
 
   /**
    * Classify a raw error into a structured ProviderError.
