@@ -90,7 +90,15 @@ export abstract class BaseClient implements LLMClient {
       return;
     }
 
-    const availabilityError = await this.checkModelAvailability();
+    // Runs once, outside the retry loop below: an unavailable model or bad
+    // credential isn't something a retry will fix, so this error is always
+    // terminal regardless of its own `retryable` field.
+    let availabilityError: ProviderError | undefined;
+    try {
+      availabilityError = await this.checkModelAvailability();
+    } catch (err) {
+      availabilityError = this.classifyError(err);
+    }
     if (availabilityError) {
       yield {
         type: 'error' as const,
