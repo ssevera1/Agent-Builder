@@ -90,6 +90,7 @@ export class LocalLLMClient extends BaseClient {
 
   private readonly baseUrl: string;
   private detectedService: LocalServiceType | null = null;
+  private serviceAvailable: boolean | null = null;
 
   constructor(modelId: string, options?: Record<string, unknown>) {
     super({ retry: options?.['retry'] as Record<string, unknown> | undefined });
@@ -131,7 +132,9 @@ export class LocalLLMClient extends BaseClient {
    * Detect which local service is running at the configured base URL.
    */
   async detectService(): Promise<LocalServiceType> {
-    if (this.detectedService) return this.detectedService;
+    if (this.detectedService && this.detectedService !== 'unknown') {
+      return this.detectedService;
+    }
 
     // Try Ollama-specific endpoint
     try {
@@ -140,6 +143,7 @@ export class LocalLLMClient extends BaseClient {
       });
       if (ollamaResp.ok) {
         this.detectedService = 'ollama';
+        this.serviceAvailable = true;
         return 'ollama';
       }
     } catch {
@@ -153,6 +157,7 @@ export class LocalLLMClient extends BaseClient {
       });
       if (vllmResp.ok) {
         this.detectedService = 'vllm';
+        this.serviceAvailable = true;
         return 'vllm';
       }
     } catch {
@@ -166,6 +171,7 @@ export class LocalLLMClient extends BaseClient {
       });
       if (modelsResp.ok) {
         this.detectedService = 'lmstudio';
+        this.serviceAvailable = true;
         return 'lmstudio';
       }
     } catch {
@@ -173,7 +179,25 @@ export class LocalLLMClient extends BaseClient {
     }
 
     this.detectedService = 'unknown';
+    this.serviceAvailable = false;
     return 'unknown';
+  }
+
+  /**
+   * Verify that the local service is available and reachable.
+   */
+  private async verifyServiceAvailable(): Promise<void> {
+    if (this.serviceAvailable === true) return;
+
+    const service = await this.detectService();
+    if (service === 'unknown') {
+      throw new ProviderError(
+        `Local LLM service not reachable at ${this.baseUrl}. Ensure Ollama, LM Studio, or vLLM is running.`,
+        'network',
+        undefined,
+        false,
+      );
+    }
   }
 
   // ── Raw Implementation ────────────────────────────────────────────────────
@@ -181,6 +205,8 @@ export class LocalLLMClient extends BaseClient {
   protected async *_rawComplete(
     request: LLMRequest,
   ): AsyncIterable<LLMStreamChunk> {
+    await this.verifyServiceAvailable();
+
     const service = await this.detectService();
     const messages = this.convertMessages(request);
     const tools = request.tools
@@ -225,6 +251,8 @@ export class LocalLLMClient extends BaseClient {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes('ECONNREFUSED') || message.includes('fetch failed')) {
+        this.serviceAvailable = false;
+        this.detectedService = null;
         throw new ProviderError(
           `Local LLM service not reachable at ${this.baseUrl}. Ensure Ollama, LM Studio, or vLLM is running.`,
           'network',
@@ -249,6 +277,16 @@ export class LocalLLMClient extends BaseClient {
       } catch {
         errorMessage = errorBody;
       }
+
+      if (response.status === 404) {
+        throw new ProviderError(
+          `Model '${this.modelId}' not found on local service (${errorMessage}). Ensure the model is loaded.`,
+          'invalid_request',
+          response.status,
+          false,
+        );
+      }
+
       throw new ProviderError(
         errorMessage,
         this.classifyStatusCode(response.status),
@@ -271,6 +309,8 @@ export class LocalLLMClient extends BaseClient {
   }
 
   protected async _rawListModels(): Promise<ModelInfo[]> {
+    await this.verifyServiceAvailable();
+
     const service = await this.detectService();
 
     if (service === 'ollama') {
@@ -359,6 +399,8 @@ export class LocalLLMClient extends BaseClient {
       numPredict?: number;
     },
   ): Promise<string> {
+    await this.verifyServiceAvailable();
+
     const body: Record<string, unknown> = {
       model: this.modelId,
       prompt,
