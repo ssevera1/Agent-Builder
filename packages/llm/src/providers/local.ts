@@ -132,7 +132,9 @@ export class LocalLLMClient extends BaseClient {
    * Detect which local service is running at the configured base URL.
    */
   async detectService(): Promise<LocalServiceType> {
-    if (this.detectedService) return this.detectedService;
+    if (this.detectedService && this.detectedService !== 'unknown') {
+      return this.detectedService;
+    }
 
     // Try Ollama-specific endpoint
     try {
@@ -250,6 +252,7 @@ export class LocalLLMClient extends BaseClient {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes('ECONNREFUSED') || message.includes('fetch failed')) {
         this.serviceAvailable = false;
+        this.detectedService = null;
         throw new ProviderError(
           `Local LLM service not reachable at ${this.baseUrl}. Ensure Ollama, LM Studio, or vLLM is running.`,
           'network',
@@ -277,7 +280,7 @@ export class LocalLLMClient extends BaseClient {
 
       if (response.status === 404) {
         throw new ProviderError(
-          `Model '${this.modelId}' not found on local service. Ensure the model is loaded.`,
+          `Model '${this.modelId}' not found on local service (${errorMessage}). Ensure the model is loaded.`,
           'invalid_request',
           response.status,
           false,
