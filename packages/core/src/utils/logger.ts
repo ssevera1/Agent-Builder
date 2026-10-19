@@ -67,6 +67,26 @@ function getContextPath(): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * Validate context values to prevent memory issues from extremely large objects.
+ */
+function validateContextValue(value: unknown, maxSize: number = 1048576): void {
+  if (value === null || value === undefined) {
+    return;
+  }
+
+  if (typeof value === 'string' && value.length > maxSize) {
+    throw new Error(`Context value too large: string exceeds ${maxSize} bytes`);
+  }
+
+  if (typeof value === 'object') {
+    const serialized = JSON.stringify(value);
+    if (serialized.length > maxSize) {
+      throw new Error(`Context value too large: object exceeds ${maxSize} bytes when serialized`);
+    }
+  }
+}
+
+/**
  * Validate context keys in a record to ensure none are empty or invalid.
  */
 function validateContextKeys(bindings: Record<string, unknown>): void {
@@ -74,6 +94,7 @@ function validateContextKeys(bindings: Record<string, unknown>): void {
     if (!key || typeof key !== 'string' || key.trim().length === 0) {
       throw new Error(`Invalid context key: keys must be non-empty strings`);
     }
+    validateContextValue(bindings[key]);
   }
 }
 
