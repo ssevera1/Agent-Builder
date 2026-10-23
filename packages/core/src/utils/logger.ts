@@ -66,6 +66,75 @@ function getContextPath(): string {
 // Helpers
 // ---------------------------------------------------------------------------
 
+const MAX_CONTEXT_VALUE_SIZE = 1_048_576;
+
+/**
+ * Estimate the serialized size (in bytes) of a value without fully
+ * materializing it, so the check can bail out early on oversized input
+ * instead of allocating the thing it's trying to reject. Tracks visited
+ * objects to stay safe on circular references (common in logged Errors,
+ * req/res pairs, etc.), which `JSON.stringify` cannot handle.
+ */
+function estimateByteSize(value: unknown, limit: number): number {
+  const seen = new WeakSet<object>();
+  let size = 0;
+
+  function walk(v: unknown): void {
+    if (size > limit) return;
+    if (v === null || v === undefined) return;
+
+    switch (typeof v) {
+      case 'string':
+        size += Buffer.byteLength(v);
+        return;
+      case 'number':
+      case 'boolean':
+        size += 8;
+        return;
+      case 'bigint':
+        size += v.toString().length;
+        return;
+      case 'object': {
+        if (seen.has(v)) return;
+        seen.add(v);
+        if (Array.isArray(v)) {
+          for (const item of v) {
+            walk(item);
+            if (size > limit) return;
+          }
+        } else {
+          for (const key of Object.keys(v)) {
+            walk((v as Record<string, unknown>)[key]);
+            if (size > limit) return;
+          }
+        }
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  walk(value);
+  return size;
+}
+
+/**
+ * Validate context values to prevent memory issues from extremely large objects.
+ */
+function validateContextValue(value: unknown): void {
+  if (value === null || value === undefined) {
+    return;
+  }
+
+  if (typeof value === 'string' || typeof value === 'object') {
+    const size = estimateByteSize(value, MAX_CONTEXT_VALUE_SIZE);
+    if (size > MAX_CONTEXT_VALUE_SIZE) {
+      throw new Error(`Context value too large: exceeds ${MAX_CONTEXT_VALUE_SIZE} bytes`);
+    }
+  }
+}
+
 /**
  * Validate context keys in a record to ensure none are empty or invalid.
  */
@@ -74,6 +143,7 @@ function validateContextKeys(bindings: Record<string, unknown>): void {
     if (!key || typeof key !== 'string' || key.trim().length === 0) {
       throw new Error(`Invalid context key: keys must be non-empty strings`);
     }
+    validateContextValue(bindings[key]);
   }
 }
 
