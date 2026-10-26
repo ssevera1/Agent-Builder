@@ -480,6 +480,15 @@ export class WorkflowExecutor {
           outputs = await handler.execute(workflowNode, nodeInputs, context);
         }
 
+        // Validate outputs are not undefined or invalid
+        if (outputs === undefined || outputs === null) {
+          throw new Error(`Node '${nodeId}' returned undefined or null outputs`);
+        }
+
+        if (typeof outputs !== 'object' || Array.isArray(outputs)) {
+          throw new Error(`Node '${nodeId}' must return an object, got ${typeof outputs}`);
+        }
+
         // Success
         markNodeCompleted(state, nodeId, outputs);
         const completeEvent = this.createEvent('node_completed', state.executionId, {
