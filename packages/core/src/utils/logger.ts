@@ -69,6 +69,43 @@ function getContextPath(): string {
 const MAX_CONTEXT_VALUE_SIZE = 1_048_576;
 
 /**
+ * Detect circular references in an object by tracking visited references.
+ */
+function hasCircularReference(value: unknown): boolean {
+  const seen = new WeakSet<object>();
+
+  function walk(v: unknown): boolean {
+    if (v === null || v === undefined) return false;
+
+    switch (typeof v) {
+      case 'string':
+      case 'number':
+      case 'boolean':
+      case 'bigint':
+        return false;
+      case 'object': {
+        if (seen.has(v)) return true;
+        seen.add(v);
+        if (Array.isArray(v)) {
+          for (const item of v) {
+            if (walk(item)) return true;
+          }
+        } else {
+          for (const key of Object.keys(v)) {
+            if (walk((v as Record<string, unknown>)[key])) return true;
+          }
+        }
+        return false;
+      }
+      default:
+        return false;
+    }
+  }
+
+  return walk(value);
+}
+
+/**
  * Estimate the serialized size (in bytes) of a value without fully
  * materializing it, so the check can bail out early on oversized input
  * instead of allocating the thing it's trying to reject. Tracks visited
@@ -120,11 +157,16 @@ function estimateByteSize(value: unknown, limit: number): number {
 }
 
 /**
- * Validate context values to prevent memory issues from extremely large objects.
+ * Validate context values to prevent memory issues from extremely large objects
+ * and circular references that could cause serialization failures.
  */
 function validateContextValue(value: unknown): void {
   if (value === null || value === undefined) {
     return;
+  }
+
+  if (typeof value === 'object' && hasCircularReference(value)) {
+    throw new Error('Context value contains circular reference');
   }
 
   if (typeof value === 'string' || typeof value === 'object') {
