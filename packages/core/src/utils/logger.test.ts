@@ -10,6 +10,15 @@ describe('createChildLogger', () => {
     expect(() => createChildLogger(parent, { req: circular })).not.toThrow();
   });
 
+  it('does not throw on shared (non-circular) references in context values', () => {
+    const parent = createSilentLogger();
+    const user = { id: 1 };
+
+    expect(() =>
+      createChildLogger(parent, { ctx: { author: user, reviewer: user } })
+    ).not.toThrow();
+  });
+
   it('does not throw on nested bigint values', () => {
     const parent = createSilentLogger();
 
