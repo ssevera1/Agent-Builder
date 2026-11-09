@@ -152,6 +152,12 @@ export class OpenAIClient extends BaseClient {
         if (choice.finish_reason) {
           // Emit accumulated tool calls
           for (const [, partial] of partialToolCalls) {
+            if (!partial.id || !partial.name) {
+              console.warn(
+                `Incomplete tool call detected: id="${partial.id}", name="${partial.name}". Skipping emission.`,
+              );
+              continue;
+            }
             yield {
               type: 'tool_call',
               toolCall: {
@@ -172,6 +178,16 @@ export class OpenAIClient extends BaseClient {
 
       // Usage info (comes in the final chunk when stream_options.include_usage is true)
       if (chunk.usage) {
+        if (
+          chunk.usage.prompt_tokens === null ||
+          chunk.usage.completion_tokens === null ||
+          chunk.usage.total_tokens === null
+        ) {
+          console.warn(
+            'Incomplete usage information in stream chunk. Skipping usage emission.',
+          );
+          continue;
+        }
         yield {
           type: 'usage',
           usage: {
