@@ -128,6 +128,14 @@ export abstract class BaseClient implements LLMClient {
               false,
             );
           }
+          if (!this.isValidChunk(chunk)) {
+            throw new ProviderError(
+              `Received malformed chunk from model: missing required fields`,
+              'invalid_response',
+              undefined,
+              false,
+            );
+          }
           if (chunk.type === 'usage' && chunk.usage) {
             this._totalUsage.inputTokens += chunk.usage.inputTokens ?? 0;
             this._totalUsage.outputTokens += chunk.usage.outputTokens ?? 0;
@@ -190,6 +198,17 @@ export abstract class BaseClient implements LLMClient {
    */
   protected async checkModelAvailability(): Promise<ProviderError | undefined> {
     return undefined;
+  }
+
+  /**
+   * Validate that a chunk has the required structure.
+   * Subclasses can override for provider-specific validation.
+   */
+  protected isValidChunk(chunk: LLMStreamChunk): boolean {
+    if (!chunk || typeof chunk !== 'object') return false;
+    const obj = chunk as Record<string, unknown>;
+    if (typeof obj['type'] !== 'string') return false;
+    return true;
   }
 
   /**
