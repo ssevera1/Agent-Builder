@@ -134,6 +134,9 @@ export class OpenAIClient extends BaseClient {
         if (delta?.tool_calls) {
           for (const tc of delta.tool_calls) {
             const idx = tc.index;
+            if (idx === undefined || idx === null) {
+              continue;
+            }
             if (!partialToolCalls.has(idx)) {
               partialToolCalls.set(idx, {
                 id: tc.id ?? '',
@@ -152,6 +155,9 @@ export class OpenAIClient extends BaseClient {
         if (choice.finish_reason) {
           // Emit accumulated tool calls
           for (const [, partial] of partialToolCalls) {
+            if (!partial.id || !partial.name) {
+              continue;
+            }
             yield {
               type: 'tool_call',
               toolCall: {
